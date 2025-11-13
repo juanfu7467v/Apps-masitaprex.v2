@@ -4,9 +4,9 @@ import dotenv from "dotenv";
 dotenv.config();
 import { Octokit } from "@octokit/rest";
 import axios from "axios";
-import FormData from "form-data"; // Mantenido por si es necesario para otra tarea, aunque no se usa en la sincronización simplificada
-import fs from "fs"; // Mantenido
-import path from "path"; // Mantenido
+import FormData from "form-data"; 
+import fs from "fs"; 
+import path from "path"; 
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -15,8 +15,6 @@ app.use(express.json({ limit: "10mb" }));
 const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
 const G_OWNER = process.env.GITHUB_OWNER;
 const G_REPO = process.env.GITHUB_REPO;
-// const VT_KEY = process.env.VIRUSTOTAL_API_KEY; // Eliminado
-const TMDB_KEY = process.env.TMDB_API_KEY || "";
 const MAX_GITHUB_FILE_SIZE_MB = 100;
 
 /* --------- Helpers GitHub ---------
@@ -55,11 +53,6 @@ async function createOrUpdateGithubFile(pathInRepo, contentBase64, message) {
     return res.data;
   }
 }
-
-/* --------- VirusTotal helper (v3) ---------
-   *** ESTA FUNCIÓN FUE ELIMINADA PARA AHORRAR TIEMPO ***
-----------------------------------------*/
-// async function vtUploadAndScan(buffer, filename) { ... } // Comentado/Eliminado
 
 /* --------- Source Crawlers --------- */
 
@@ -115,14 +108,13 @@ app.get("/api/sync_github_release", async (req, res) => {
       version,
       assetName,
       size: apkBuffer.length,
-      // vtReport: null, // Eliminado
       addedAt: new Date().toISOString(),
       apkPath
     };
     const metaPath = `public/apps/${pName}/meta_${version}.json`;
     await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta,null,2)).toString("base64"), `Add meta ${pName} ${version}`);
 
-    return res.json({ ok:true, meta, message: "APK sincronizado sin escaneo de VirusTotal." });
+    return res.json({ ok:true, meta, message: "APK sincronizado." });
   } catch (e) {
     console.error(e);
     return res.status(500).json({ ok:false, error: e.message });
@@ -164,14 +156,13 @@ app.get("/api/sync_fdroid", async (req, res) => {
       packageName,
       version,
       size: apkBuffer.length,
-      // vtReport: null, // Eliminado
       addedAt: new Date().toISOString(),
       apkPath
     };
     const metaPath = `public/apps/${packageName}/meta_${version}.json`;
     await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta,null,2)).toString("base64"), `Add meta ${packageName} ${version}`);
 
-    return res.json({ ok:true, meta, message: "APK sincronizado sin escaneo de VirusTotal." });
+    return res.json({ ok:true, meta, message: "APK sincronizado." });
   } catch (e) {
     console.error(e);
     return res.status(500).json({ ok:false, error: e.message });
@@ -203,14 +194,13 @@ app.post("/api/manual_add", async (req, res) => {
         packageName, 
         displayName, 
         size: apkBuffer.length, 
-        // vtReport: null, // Eliminado
         addedAt: new Date().toISOString(), 
         apkPath 
     };
     const metaPath = `public/apps/${packageName}/meta_${version}.json`;
     await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta,null,2)).toString("base64"), `Add meta ${packageName} ${version}`);
     
-    return res.json({ ok:true, meta, message: "APK agregado manualmente sin escaneo de VirusTotal." });
+    return res.json({ ok:true, meta, message: "APK agregado manualmente." });
   } catch (e) {
     console.error(e);
     return res.status(500).json({ ok:false, error: e.message });
@@ -220,7 +210,6 @@ app.post("/api/manual_add", async (req, res) => {
 // 4) List apps simple: reads repo tree for public/apps
 app.get("/api/list_apps", async (req, res) => {
   try {
-    // Nota: Si el repo es grande, getContent puede fallar o ser lento. Mejor usar la API de Trees si se tienen muchos archivos.
     const tree = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: "public/apps" });
     // tree is array of directories (one per package)
     const apps = [];
@@ -250,22 +239,6 @@ app.get("/api/get_app_meta", async (req,res) => {
     const raw = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: metas[0].path });
     const content = Buffer.from(raw.data.content, "base64").toString("utf8");
     return res.json({ ok:true, meta: JSON.parse(content) });
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ ok:false, error: e.message });
-  }
-});
-
-/* --------- Optional: Movie search endpoint (example using TMDb) --------- */
-app.get("/api/search_movies", async (req, res) => {
-  const q = req.query.q;
-  if (!q) return res.status(400).json({ ok:false, error:"q param required" });
-  if (!TMDB_KEY) return res.status(400).json({ ok:false, error:"TMDB_API_KEY not configured" });
-  try {
-    const r = await axios.get("https://api.themoviedb.org/3/search/movie", {
-      params: { api_key: TMDB_KEY, query: q, language: "es-ES", include_adult:false }
-    });
-    return res.json({ ok:true, results: r.data.results });
   } catch (e) {
     console.error(e);
     return res.status(500).json({ ok:false, error: e.message });
