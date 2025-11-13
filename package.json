@@ -1,0 +1,20 @@
+{
+  "name": "apk-sync-server",
+  "version": "1.0.0",
+  "description": "Server for syncing APKs from various sources to GitHub.",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@octokit/rest": "^20.1.1",
+    "axios": "^1.7.2",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "form-data": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
