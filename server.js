@@ -7,6 +7,7 @@ import axios from "axios";
 import FormData from "form-data"; 
 import fs from "fs"; 
 import path from "path"; 
+import * as cheerio from 'cheerio'; // <-- Nuevo/re-incluido
 import puppeteer from 'puppeteer';
 
 const app = express();
@@ -18,10 +19,20 @@ const G_OWNER = process.env.GITHUB_OWNER;
 const G_REPO = process.env.GITHUB_REPO;
 const MAX_GITHUB_FILE_SIZE_MB = 100;
 
+// URL DE PROXY PÚBLICO (Usado para ocultar IP en búsqueda)
+// ADVERTENCIA: Esta URL puede fallar o ser lenta.
+const FREE_PROXY_URL = 'http://api.scraperapi.com?api_key=TU_CLAVE_AQUI&url='; // Reemplaza 'TU_CLAVE_AQUI' con una clave gratuita de ScraperAPI si tienes, o usa otro proxy
+// Para la prueba, usaremos solo axios para evitar el proxy si no tienes una clave de ScraperAPI.
+// Si el siguiente código falla, intenta añadir un proxy real o cambiar el User-Agent.
+
+const AXIOS_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
+
+
 // ----------------------------------------------------
 // FUNCIÓN CENTRAL PARA INICIAR EL NAVEGADOR VIRTUAL
 // ----------------------------------------------------
 async function launchBrowser() {
+    // Puppeteer solo se usará para la página de descarga final si Cheerio falla en obtener el link directo.
     const browser = await puppeteer.launch({ 
         headless: true,
         args: [
@@ -38,6 +49,7 @@ async function launchBrowser() {
 
 /* --------- Helpers GitHub (sin cambios) --------- */
 async function createOrUpdateGithubFile(pathInRepo, contentBase64, message) {
+  // ... (código helper de GitHub sin cambios)
   try {
     const get = await octokit.repos.getContent({
       owner: G_OWNER,
@@ -67,120 +79,87 @@ async function createOrUpdateGithubFile(pathInRepo, contentBase64, message) {
 }
 
 /* ----------------------------------------------------------------------
-   FUNCIÓN NUEVA: Búsqueda y Extracción de Metadatos de Uptodown con Puppeteer
+   FUNCIÓN FINAL: Búsqueda y Extracción de Metadatos de Uptodown con Cheerio/Axios
+   Usaremos Cheerio para mayor discreción.
 ------------------------------------------------------------------------- */
 async function searchAppAndScrapeInfoUptodown(query) {
-    const browser = await launchBrowser();
-    const page = await browser.newPage();
-    // Usamos la URL de búsqueda global de Uptodown
     const searchUrl = `https://www.uptodown.com/search?q=${encodeURIComponent(query)}`;
     
     try {
-        await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-        
-        // Selector para el primer resultado de la aplicación
-        const resultSelector = '.app-list > .item:first-child .info > a'; 
-        
-        try {
-            await page.waitForSelector(resultSelector, { timeout: 15000 }); 
-        } catch (e) {
-            console.error(`No se encontró el primer resultado de búsqueda en Uptodown.`);
-            return null;
-        }
-
-        // 1. Encontrar el enlace a la página de la aplicación
-        const appPageLink = await page.$eval(resultSelector, a => a.getAttribute('href')).catch(e => {
-             console.error("No se pudo extraer el appPageLink (Error de eval):", e.message);
-             return null;
+        // 1. Obtener la página de resultados de búsqueda usando Axios (simulando un navegador)
+        const response = await axios.get(searchUrl, {
+            headers: { 'User-Agent': AXIOS_USER_AGENT },
+            timeout: 20000 
         });
-
-        if (!appPageLink || !appPageLink.startsWith('https://')) {
-             console.log("El enlace encontrado no es válido o no sigue el patrón esperado en Uptodown.");
-             return null;
-        }
-        const appPageUrl = appPageLink;
-
-        // 2. Navegar a la página de la aplicación para metadatos detallados
-        await page.goto(appPageUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
         
-        // Esperar a que la sección de descarga esté cargada
-        try {
-            await page.waitForSelector('.button-download', { timeout: 5000 });
-        } catch (e) {
-            console.log("No se pudo cargar la página de detalles de la aplicación o el botón de descarga no aparece.");
+        const $ = cheerio.load(response.data);
+
+        // Selector para el primer resultado de la aplicación
+        const resultLinkElement = $('.app-list > .item:first-child .info > a'); 
+        
+        if (resultLinkElement.length === 0) {
+            console.error(`[Cheerio] No se encontró el primer resultado de búsqueda en Uptodown.`);
             return null;
         }
 
+        // 2. Extraer el enlace a la página de la aplicación
+        const appPageUrl = resultLinkElement.attr('href');
 
-        // 3. Extraer Metadatos usando page.evaluate
-        const metaData = await page.evaluate((appPageUrl) => {
-            const getText = (selector) => document.querySelector(selector)?.textContent.trim() || '';
-            const getAttr = (selector, attr) => document.querySelector(selector)?.getAttribute(attr) || '';
-            
-            // Extracción de nombre de paquete (packageName) - Uptodown suele ponerlo en la URL después del idioma
-            // Ejemplo: /android/whatsapp/descargar
-            // Es mejor buscarlo en un atributo de la página si es posible, o usar la URL base de Uptodown.
-            // Para simplificar, usaremos un valor temporal
-            let packageName = 'uptodown.unknown.package'; 
-            const linkParts = appPageUrl.split('/');
-            // El nombre de la app (ej: whatsapp) es el penúltimo segmento. No es el packageName, pero es un identificador.
-            const appSlug = linkParts[linkParts.length - 2] || 'unknown'; 
-            
-            // A veces, Uptodown incluye el package name en una meta tag, si no, lo construimos.
-            const packageNameMeta = getAttr('meta[name="og:url"]', 'content');
-            if (packageNameMeta) {
-                 // La URL og:url de la versión a veces contiene el package. Si no, usamos el slug.
-                 const pkgMatch = packageNameMeta.match(/([a-zA-Z0-9.]+)\/download/);
-                 packageName = pkgMatch ? pkgMatch[1] : `com.uptodown.${appSlug}`;
-            } else {
-                 packageName = `com.uptodown.${appSlug}`;
-            }
+        if (!appPageUrl || !appPageUrl.startsWith('https://')) {
+             console.log("[Cheerio] El enlace encontrado no es válido o no sigue el patrón esperado en Uptodown.");
+             return null;
+        }
 
-            
-            const displayName = getText('.info .name') || 'Nombre Desconocido';
-            const version = getText('.version-name') || '0.0'; // Se encuentra cerca del botón de descarga
-            
-            const description = getText('.full-description p') || 'No se encontró descripción.';
-            
-            const iconUrl = getAttr('.logo img', 'src') || '';
-
-            // Extraer URL de Descarga - el botón "Download" principal
-            const downloadLink = getAttr('.button-download', 'href');
-            
-            return {
-                packageName,
-                displayName,
-                version,
-                description,
-                iconUrl,
-                downloadLink
-            };
-        }, appPageUrl); 
-
-        if (!metaData.downloadLink) {
+        // 3. Navegar a la página de la aplicación para metadatos detallados (usando Axios/Cheerio nuevamente)
+        const appPageResponse = await axios.get(appPageUrl, {
+             headers: { 'User-Agent': AXIOS_USER_AGENT },
+             timeout: 20000 
+        });
+        const $$ = cheerio.load(appPageResponse.data);
+        
+        // 4. Extraer Metadatos
+        const downloadLink = $$('.button-download').attr('href');
+        
+        if (!downloadLink) {
              console.log("No se encontró enlace de descarga directo en la página de detalles de Uptodown.");
              return null;
         }
         
+        // Extracción de PackageName (basado en la URL de Uptodown)
+        const linkParts = appPageUrl.split('/');
+        const appSlug = linkParts[linkParts.length - 2] || 'unknown'; 
+        let packageName = `com.uptodown.${appSlug}`;
+        
+        // Intenta obtener el nombre de paquete del botón de descarga (a veces contiene el packageID)
+        const downloadButtonText = $$('.button-download').text();
+        const pkgMatch = downloadButtonText.match(/([a-zA-Z0-9.]+)\/download/);
+        if (pkgMatch) {
+             packageName = pkgMatch[1];
+        }
+
+
+        const displayName = $$('.info .name').text().trim() || 'Nombre Desconocido';
+        const version = $$('.version-name').text().trim() || '0.0'; 
+        const description = ($$('.full-description p').text().trim() || 'No se encontró descripción.').substring(0, 500) + '...';
+        const iconUrl = $$('.logo img').attr('src') || '';
+        
         // El enlace de Uptodown es directo
-        const finalDownloadLink = metaData.downloadLink; 
+        const finalDownloadLink = downloadLink; 
 
         return {
-            packageName: metaData.packageName,
-            displayName: metaData.displayName,
-            version: metaData.version,
-            description: metaData.description.substring(0, 500) + '...',
-            iconUrl: metaData.iconUrl.startsWith('//') ? 'https:' + metaData.iconUrl : metaData.iconUrl,
+            packageName: packageName,
+            displayName: displayName,
+            version: version,
+            description: description,
+            iconUrl: iconUrl.startsWith('//') ? 'https:' + iconUrl : iconUrl,
             screenshots: [], 
             downloadUrl: finalDownloadLink, 
             source: "uptodown"
         };
         
     } catch (e) {
-        console.error("Error EN EL SCRAPING (GENERAL Uptodown):", e.message);
+        console.error("Error EN EL SCRAPING (GENERAL Uptodown/Cheerio):", e.message);
         return null;
-    } finally {
-        await browser.close(); 
     }
 }
 
@@ -189,7 +168,7 @@ async function searchAppAndScrapeInfoUptodown(query) {
 // ---------------------------------------------------
 
 /* ---------------------------------
-   ENDPOINT 1: Buscar Aplicación (Ahora usando Uptodown)
+   ENDPOINT 1: Buscar Aplicación (Ahora usando Uptodown con Cheerio)
    Uso: GET /api/search_app?q=facebook
 ------------------------------------*/
 app.get("/api/search_app", async (req, res) => {
@@ -197,17 +176,16 @@ app.get("/api/search_app", async (req, res) => {
     if (!q) return res.status(400).json({ ok: false, error: "El parámetro 'q' (consulta de búsqueda) es requerido." });
 
     try {
-        // CAMBIAMOS A UPTODOWN
         const appInfo = await searchAppAndScrapeInfoUptodown(q);
         
         if (!appInfo) {
-            return res.json({ ok: true, results: [], message: "No se encontraron resultados para la búsqueda en Uptodown." });
+            return res.json({ ok: true, results: [], message: "No se encontraron resultados para la búsqueda en Uptodown (cheerio)." });
         }
 
         return res.json({ 
             ok: true, 
             results: [appInfo],
-            message: `Resultados de búsqueda scrapeados de ${appInfo.source}.`
+            message: `Resultados de búsqueda scrapeados de ${appInfo.source} (cheerio).`
         });
 
     } catch (e) {
@@ -217,7 +195,7 @@ app.get("/api/search_app", async (req, res) => {
 });
 
 /* ---------------------------------
-   ENDPOINT 2: Sincronización Automática (Reutiliza la nueva búsqueda)
+   ENDPOINT 2: Sincronización Automática
    Uso: POST /api/sync_app_by_search 
    Body: { query: "facebook" }
 ------------------------------------*/
@@ -225,10 +203,10 @@ app.post("/api/sync_app_by_search", async (req, res) => {
     const { query } = req.body;
     if (!query) return res.status(400).json({ ok: false, error: "El campo 'query' es requerido en el body." });
     
-    const AXIOS_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
+    const AXIOS_USER_AGENT_DOWNLOAD = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
     try {
-        // 1. Buscar y extraer metadatos usando la nueva función de Uptodown
+        // 1. Buscar y extraer metadatos usando Cheerio
         const appInfo = await searchAppAndScrapeInfoUptodown(query); 
         if (!appInfo || !appInfo.downloadUrl) {
             return res.json({ ok: false, error: "No se encontraron datos completos o URL de descarga para la aplicación en Uptodown." });
@@ -239,7 +217,8 @@ app.post("/api/sync_app_by_search", async (req, res) => {
         // 2. Descargar la APK usando Axios
         const apkResp = await axios.get(downloadUrl, { 
             responseType: "arraybuffer",
-            headers: { 'User-Agent': AXIOS_USER_AGENT } 
+            headers: { 'User-Agent': AXIOS_USER_AGENT_DOWNLOAD },
+            timeout: 60000 // Aumentar timeout para descarga de archivo grande
         });
         const apkBuffer = Buffer.from(apkResp.data);
 
@@ -251,7 +230,7 @@ app.post("/api/sync_app_by_search", async (req, res) => {
         // 4. Guardar APK en GitHub
         const base64Apk = apkBuffer.toString("base64");
         const apkPath = `public/apps/${packageName}/apk_${version}.apk`;
-        await createOrUpdateGithubFile(apkPath, base64Ap4, `Sincronizar APK: ${displayName} v${version} (Uptodown)`);
+        await createOrUpdateGithubFile(apkPath, base64Apk, `Sincronizar APK: ${displayName} v${version} (Uptodown/Cheerio)`);
         
         // 5. Crear Metadatos completos
         const meta = {
@@ -269,12 +248,12 @@ app.post("/api/sync_app_by_search", async (req, res) => {
 
         // 6. Guardar Metadatos en GitHub
         const metaPath = `public/apps/${packageName}/meta_${version}.json`;
-        await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"), `Sincronizar Meta: ${displayName} v${version} (Uptodown)`);
+        await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"), `Sincronizar Meta: ${displayName} v${version} (Uptodown/Cheerio)`);
 
         return res.json({ 
             ok: true, 
             meta, 
-            message: `APK y Metadatos de ${displayName} v${version} sincronizados exitosamente desde Uptodown.` 
+            message: `APK y Metadatos de ${displayName} v${version} sincronizados exitosamente desde Uptodown (Cheerio).` 
         });
 
     } catch (e) {
@@ -285,7 +264,6 @@ app.post("/api/sync_app_by_search", async (req, res) => {
 
 /* ---------------------------------
    ENDPOINT 3: Sincronización Masiva de Apps Populares
-   Uso: POST /api/sync_popular_apps 
 ------------------------------------*/
 const POPULAR_APPS = [
     "facebook",
@@ -299,22 +277,22 @@ app.post("/api/sync_popular_apps", async (req, res) => {
     let results = [];
     let successCount = 0;
     
-    const AXIOS_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
+    const AXIOS_USER_AGENT_DOWNLOAD = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
     
     const syncSingleApp = async (query) => {
         try {
-            // Usar la nueva función de Uptodown
+            // Usar la nueva función de Uptodown con Cheerio
             const appInfo = await searchAppAndScrapeInfoUptodown(query);
             
             if (!appInfo || !appInfo.downloadUrl) {
-                return { query, ok: false, message: "No se encontraron datos o URL de descarga en Uptodown." };
+                return { query, ok: false, message: "No se encontraron datos o URL de descarga en Uptodown (Cheerio)." };
             }
 
             const { packageName, version, downloadUrl, displayName } = appInfo;
 
             const apkResp = await axios.get(downloadUrl, { 
                 responseType: "arraybuffer",
-                headers: { 'User-Agent': AXIOS_USER_AGENT }
+                headers: { 'User-Agent': AXIOS_USER_AGENT_DOWNLOAD }
             });
             const apkBuffer = Buffer.from(apkResp.data);
 
@@ -340,14 +318,14 @@ app.post("/api/sync_popular_apps", async (req, res) => {
             };
             
             // Subir APK
-            await createOrUpdateGithubFile(apkPath, base64Apk, `Sincronizar APK Masiva: ${displayName} v${version} (Uptodown)`);
+            await createOrUpdateGithubFile(apkPath, base64Apk, `Sincronizar APK Masiva: ${displayName} v${version} (Uptodown/Cheerio)`);
             
             // Subir Metadatos
             const metaPath = `public/apps/${packageName}/meta_${version}.json`;
-            await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"), `Sincronizar Meta Masiva: ${displayName} v${version} (Uptodown)`);
+            await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"), `Sincronizar Meta Masiva: ${displayName} v${version} (Uptodown/Cheerio)`);
 
             successCount++;
-            return { query, ok: true, version, packageName, message: "Sincronizado correctamente desde Uptodown." };
+            return { query, ok: true, version, packageName, message: "Sincronizado correctamente desde Uptodown (Cheerio)." };
 
         } catch (e) {
             console.error(`Error al sincronizar ${query}:`, e.message);
@@ -365,7 +343,7 @@ app.post("/api/sync_popular_apps", async (req, res) => {
         totalProcessed: POPULAR_APPS.length,
         totalSuccess: successCount,
         results,
-        message: "Proceso de sincronización masiva finalizado (Uptodown)."
+        message: "Proceso de sincronización masiva finalizado (Uptodown/Cheerio)."
     });
 });
 
@@ -373,8 +351,10 @@ app.post("/api/sync_popular_apps", async (req, res) => {
 /* ---------------------------------
    CRAWLERS ORIGINALES (Mantenidos)
 ------------------------------------*/
+// ... (El resto de los endpoints de sync_github_release, sync_fdroid, manual_add, list_apps, get_app_meta, ping permanecen igual)
+// Los endpoints de sync_github_release, sync_fdroid, manual_add, list_apps, get_app_meta, y ping no necesitan cambios.
+// Mantener el código original de esos endpoints.
 
-// 1) GitHub Releases fetcher
 app.get("/api/sync_github_release", async (req, res) => {
   const { repo, packageName } = req.query; 
   if (!repo) return res.status(400).json({ ok:false, error: "repo param required (owner/repo)"});
