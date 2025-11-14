@@ -67,23 +67,24 @@ async function createOrUpdateGithubFile(pathInRepo, contentBase64, message) {
 }
 
 /* ----------------------------------------------------------------------
-   FUNCIÓN NUEVA: Búsqueda y Extracción de Metadatos de APK Pure con Puppeteer
+   FUNCIÓN NUEVA: Búsqueda y Extracción de Metadatos de Uptodown con Puppeteer
 ------------------------------------------------------------------------- */
-async function searchAppAndScrapeInfoAPKPure(query) {
+async function searchAppAndScrapeInfoUptodown(query) {
     const browser = await launchBrowser();
     const page = await browser.newPage();
-    const searchUrl = `https://apkpure.com/search?q=${encodeURIComponent(query)}`;
+    // Usamos la URL de búsqueda global de Uptodown
+    const searchUrl = `https://www.uptodown.com/search?q=${encodeURIComponent(query)}`;
     
     try {
         await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
         
-        // Esperamos el primer contenedor de resultado
-        const resultSelector = '.apk_list > li:first-child a.search_item'; 
+        // Selector para el primer resultado de la aplicación
+        const resultSelector = '.app-list > .item:first-child .info > a'; 
         
         try {
             await page.waitForSelector(resultSelector, { timeout: 15000 }); 
         } catch (e) {
-            console.error(`No se encontró el primer resultado de búsqueda en APKPure.`);
+            console.error(`No se encontró el primer resultado de búsqueda en Uptodown.`);
             return null;
         }
 
@@ -93,19 +94,18 @@ async function searchAppAndScrapeInfoAPKPure(query) {
              return null;
         });
 
-        if (!appPageLink || !appPageLink.startsWith('/')) {
-             console.log("El enlace encontrado no es válido o no sigue el patrón esperado en APKPure.");
+        if (!appPageLink || !appPageLink.startsWith('https://')) {
+             console.log("El enlace encontrado no es válido o no sigue el patrón esperado en Uptodown.");
              return null;
         }
-        const appPageUrl = `https://apkpure.com${appPageLink}`;
+        const appPageUrl = appPageLink;
 
         // 2. Navegar a la página de la aplicación para metadatos detallados
         await page.goto(appPageUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
         
-        // Esperar a que el botón de descarga esté cargado
+        // Esperar a que la sección de descarga esté cargada
         try {
-            // El selector para el botón de descarga principal de la aplicación
-            await page.waitForSelector('.download_box a.apk_download_btn', { timeout: 5000 });
+            await page.waitForSelector('.button-download', { timeout: 5000 });
         } catch (e) {
             console.log("No se pudo cargar la página de detalles de la aplicación o el botón de descarga no aparece.");
             return null;
@@ -117,21 +117,35 @@ async function searchAppAndScrapeInfoAPKPure(query) {
             const getText = (selector) => document.querySelector(selector)?.textContent.trim() || '';
             const getAttr = (selector, attr) => document.querySelector(selector)?.getAttribute(attr) || '';
             
-            // Extracción de nombre de paquete (packageName)
-            // APK Pure lo suele tener en la URL: /paquete-de-la-app/com.ejemplo.paquete
-            const packageNameMatch = appPageUrl.match(/([^/]+)$/);
-            const packageName = packageNameMatch ? packageNameMatch[1] : 'unknown.package.name';
+            // Extracción de nombre de paquete (packageName) - Uptodown suele ponerlo en la URL después del idioma
+            // Ejemplo: /android/whatsapp/descargar
+            // Es mejor buscarlo en un atributo de la página si es posible, o usar la URL base de Uptodown.
+            // Para simplificar, usaremos un valor temporal
+            let packageName = 'uptodown.unknown.package'; 
+            const linkParts = appPageUrl.split('/');
+            // El nombre de la app (ej: whatsapp) es el penúltimo segmento. No es el packageName, pero es un identificador.
+            const appSlug = linkParts[linkParts.length - 2] || 'unknown'; 
             
-            const displayName = getText('.main-info .title') || 'Nombre Desconocido';
-            const version = getText('.version-pw > span:nth-child(2)') || '0.0';
+            // A veces, Uptodown incluye el package name en una meta tag, si no, lo construimos.
+            const packageNameMeta = getAttr('meta[name="og:url"]', 'content');
+            if (packageNameMeta) {
+                 // La URL og:url de la versión a veces contiene el package. Si no, usamos el slug.
+                 const pkgMatch = packageNameMeta.match(/([a-zA-Z0-9.]+)\/download/);
+                 packageName = pkgMatch ? pkgMatch[1] : `com.uptodown.${appSlug}`;
+            } else {
+                 packageName = `com.uptodown.${appSlug}`;
+            }
+
             
-            // La descripción se corta a veces
-            const description = getText('.description p') || 'No se encontró descripción.';
+            const displayName = getText('.info .name') || 'Nombre Desconocido';
+            const version = getText('.version-name') || '0.0'; // Se encuentra cerca del botón de descarga
             
-            const iconUrl = getAttr('.icon img', 'src') || '';
+            const description = getText('.full-description p') || 'No se encontró descripción.';
+            
+            const iconUrl = getAttr('.logo img', 'src') || '';
 
             // Extraer URL de Descarga - el botón "Download" principal
-            const downloadLink = getAttr('.download_box a.apk_download_btn', 'href');
+            const downloadLink = getAttr('.button-download', 'href');
             
             return {
                 packageName,
@@ -144,30 +158,26 @@ async function searchAppAndScrapeInfoAPKPure(query) {
         }, appPageUrl); 
 
         if (!metaData.downloadLink) {
-             console.log("No se encontró enlace de descarga directo en la página de detalles de APKPure.");
+             console.log("No se encontró enlace de descarga directo en la página de detalles de Uptodown.");
              return null;
         }
         
-        // En APKPure, el primer enlace de descarga a menudo va a la página final de descarga
-        const downloadPageUrl = metaData.downloadLink; // Este ya es un enlace absoluto
-
-        // 4. Obtener el enlace final de descarga (APK Pure es directo)
-        // La URL que obtenemos suele ser la URL final de descarga de la APK.
-        const finalDownloadLink = downloadPageUrl; 
+        // El enlace de Uptodown es directo
+        const finalDownloadLink = metaData.downloadLink; 
 
         return {
             packageName: metaData.packageName,
             displayName: metaData.displayName,
             version: metaData.version,
             description: metaData.description.substring(0, 500) + '...',
-            iconUrl: metaData.iconUrl,
+            iconUrl: metaData.iconUrl.startsWith('//') ? 'https:' + metaData.iconUrl : metaData.iconUrl,
             screenshots: [], 
             downloadUrl: finalDownloadLink, 
-            source: "apkpure"
+            source: "uptodown"
         };
         
     } catch (e) {
-        console.error("Error EN EL SCRAPING (GENERAL APKPure):", e.message);
+        console.error("Error EN EL SCRAPING (GENERAL Uptodown):", e.message);
         return null;
     } finally {
         await browser.close(); 
@@ -179,7 +189,7 @@ async function searchAppAndScrapeInfoAPKPure(query) {
 // ---------------------------------------------------
 
 /* ---------------------------------
-   ENDPOINT 1: Buscar Aplicación (Ahora usando APK Pure)
+   ENDPOINT 1: Buscar Aplicación (Ahora usando Uptodown)
    Uso: GET /api/search_app?q=facebook
 ------------------------------------*/
 app.get("/api/search_app", async (req, res) => {
@@ -187,11 +197,11 @@ app.get("/api/search_app", async (req, res) => {
     if (!q) return res.status(400).json({ ok: false, error: "El parámetro 'q' (consulta de búsqueda) es requerido." });
 
     try {
-        // CAMBIAMOS A APK PURE
-        const appInfo = await searchAppAndScrapeInfoAPKPure(q);
+        // CAMBIAMOS A UPTODOWN
+        const appInfo = await searchAppAndScrapeInfoUptodown(q);
         
         if (!appInfo) {
-            return res.json({ ok: true, results: [], message: "No se encontraron resultados para la búsqueda en APKPure." });
+            return res.json({ ok: true, results: [], message: "No se encontraron resultados para la búsqueda en Uptodown." });
         }
 
         return res.json({ 
@@ -218,10 +228,10 @@ app.post("/api/sync_app_by_search", async (req, res) => {
     const AXIOS_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
     try {
-        // 1. Buscar y extraer metadatos usando la nueva función
-        const appInfo = await searchAppAndScrapeInfoAPKPure(query); 
+        // 1. Buscar y extraer metadatos usando la nueva función de Uptodown
+        const appInfo = await searchAppAndScrapeInfoUptodown(query); 
         if (!appInfo || !appInfo.downloadUrl) {
-            return res.json({ ok: false, error: "No se encontraron datos completos o URL de descarga para la aplicación en APKPure." });
+            return res.json({ ok: false, error: "No se encontraron datos completos o URL de descarga para la aplicación en Uptodown." });
         }
 
         const { packageName, version, downloadUrl, displayName, description, iconUrl, screenshots } = appInfo;
@@ -241,7 +251,7 @@ app.post("/api/sync_app_by_search", async (req, res) => {
         // 4. Guardar APK en GitHub
         const base64Apk = apkBuffer.toString("base64");
         const apkPath = `public/apps/${packageName}/apk_${version}.apk`;
-        await createOrUpdateGithubFile(apkPath, base64Apk, `Sincronizar APK: ${displayName} v${version} (APKPure)`);
+        await createOrUpdateGithubFile(apkPath, base64Ap4, `Sincronizar APK: ${displayName} v${version} (Uptodown)`);
         
         // 5. Crear Metadatos completos
         const meta = {
@@ -259,12 +269,12 @@ app.post("/api/sync_app_by_search", async (req, res) => {
 
         // 6. Guardar Metadatos en GitHub
         const metaPath = `public/apps/${packageName}/meta_${version}.json`;
-        await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"), `Sincronizar Meta: ${displayName} v${version} (APKPure)`);
+        await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"), `Sincronizar Meta: ${displayName} v${version} (Uptodown)`);
 
         return res.json({ 
             ok: true, 
             meta, 
-            message: `APK y Metadatos de ${displayName} v${version} sincronizados exitosamente desde APKPure.` 
+            message: `APK y Metadatos de ${displayName} v${version} sincronizados exitosamente desde Uptodown.` 
         });
 
     } catch (e) {
@@ -293,11 +303,11 @@ app.post("/api/sync_popular_apps", async (req, res) => {
     
     const syncSingleApp = async (query) => {
         try {
-            // Usar la nueva función de APKPure
-            const appInfo = await searchAppAndScrapeInfoAPKPure(query);
+            // Usar la nueva función de Uptodown
+            const appInfo = await searchAppAndScrapeInfoUptodown(query);
             
             if (!appInfo || !appInfo.downloadUrl) {
-                return { query, ok: false, message: "No se encontraron datos o URL de descarga en APKPure." };
+                return { query, ok: false, message: "No se encontraron datos o URL de descarga en Uptodown." };
             }
 
             const { packageName, version, downloadUrl, displayName } = appInfo;
@@ -330,14 +340,14 @@ app.post("/api/sync_popular_apps", async (req, res) => {
             };
             
             // Subir APK
-            await createOrUpdateGithubFile(apkPath, base64Apk, `Sincronizar APK Masiva: ${displayName} v${version} (APKPure)`);
+            await createOrUpdateGithubFile(apkPath, base64Apk, `Sincronizar APK Masiva: ${displayName} v${version} (Uptodown)`);
             
             // Subir Metadatos
             const metaPath = `public/apps/${packageName}/meta_${version}.json`;
-            await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"), `Sincronizar Meta Masiva: ${displayName} v${version} (APKPure)`);
+            await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"), `Sincronizar Meta Masiva: ${displayName} v${version} (Uptodown)`);
 
             successCount++;
-            return { query, ok: true, version, packageName, message: "Sincronizado correctamente desde APKPure." };
+            return { query, ok: true, version, packageName, message: "Sincronizado correctamente desde Uptodown." };
 
         } catch (e) {
             console.error(`Error al sincronizar ${query}:`, e.message);
@@ -355,7 +365,7 @@ app.post("/api/sync_popular_apps", async (req, res) => {
         totalProcessed: POPULAR_APPS.length,
         totalSuccess: successCount,
         results,
-        message: "Proceso de sincronización masiva finalizado (APKPure)."
+        message: "Proceso de sincronización masiva finalizado (Uptodown)."
     });
 });
 
