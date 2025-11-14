@@ -82,42 +82,25 @@ async function searchAppAndScrapeInfo(query) {
     try {
         await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
         
-        // CORRECCIÓN: Usar un selector más estable para el primer resultado
-        // Probamos con el selector de la primera fila de la lista de versiones
-        const resultSelector = '.list-card:first-child .app_versions .appRow';
-        const fallbackSelector = '.apkm-table-row:first-child'; 
+        // NUEVA ESTRATEGIA: Buscar el primer enlace que apunte a una página de aplicación (/app/...)
+        const linkSelector = 'a[href*="/app/"]:not([href*="download"])'; 
         
-        let finalSelector = resultSelector;
-
         try {
-            await page.waitForSelector(finalSelector, { timeout: 10000 }); // Espera hasta 10 segundos
+            // Esperamos a que cualquier enlace de aplicación aparezca
+            await page.waitForSelector(linkSelector, { timeout: 15000 }); 
         } catch (e) {
-             console.error(`Error al esperar el selector principal (${resultSelector}). Intentando selector de fallback.`);
-             finalSelector = fallbackSelector;
-             try {
-                await page.waitForSelector(finalSelector, { timeout: 5000 });
-             } catch (e2) {
-                console.error(`Error al esperar el selector de fallback (${fallbackSelector}).`);
-                return null;
-             }
-        }
-
-        // 1. Encontrar el primer resultado de la búsqueda
-        const firstResultCard = await page.$(finalSelector); 
-        if (!firstResultCard) {
-            console.log("No se encontró ningún elemento de resultado después de esperar.");
+            console.error(`No se encontró ningún enlace con el patrón '/app/'.`);
             return null;
         }
-        
-        // 2. Extraer el enlace a la página de la aplicación
-        // El enlace a la página de la aplicación está típicamente en la segunda columna.
-        const appPageLink = await firstResultCard.$eval('div:nth-child(2) > a', a => a.getAttribute('href')).catch(e => {
-             console.error("No se pudo extraer el appPageLink:", e.message);
+
+        // 1. Encontrar el enlace a la página de la aplicación
+        const appPageLink = await page.$eval(linkSelector, a => a.getAttribute('href')).catch(e => {
+             console.error("No se pudo extraer el appPageLink (Error de eval):", e.message);
              return null;
         });
-        
-        if (!appPageLink) {
-             console.log("No se encontró appPageLink en el resultado de búsqueda.");
+
+        if (!appPageLink || !appPageLink.startsWith('/app/')) {
+             console.log("El enlace encontrado no es válido o no sigue el patrón esperado.");
              return null;
         }
         const appPageUrl = `https://www.apkmirror.com${appPageLink}`;
@@ -139,6 +122,7 @@ async function searchAppAndScrapeInfo(query) {
             const getText = (selector) => document.querySelector(selector)?.textContent.trim() || '';
             const getAttr = (selector, attr) => document.querySelector(selector)?.getAttribute(attr) || '';
 
+            // El packageName se extrae de la URL que ya obtuvimos
             const packageNameMatch = appPageLink.match(/\/app\/([^/]+)\/$/);
             const packageName = packageNameMatch ? packageNameMatch[1] : 'unknown.package.name';
             
@@ -178,7 +162,7 @@ async function searchAppAndScrapeInfo(query) {
         }, appPageLink); // Pasamos el enlace original para extraer el packageName
 
         if (!metaData.downloadPageLink) {
-             console.log("No se encontró enlace a la página de descarga.");
+             console.log("No se encontró enlace a la página de descarga en la página de detalles.");
              return null;
         }
         
