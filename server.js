@@ -10,7 +10,8 @@ import gplay from "google-play-scraper";
 const app = express();
 app.use(express.json({ limit: "10mb" }));
 
-// 🚨 SOLUCIÓN: Habilita el servicio de archivos estáticos desde la carpeta 'public'
+// Mantener la solución de archivos estáticos, aunque no sea la fuente del problema,
+// puede ser útil para otros archivos como JSON.
 app.use(express.static('public'));
 
 /* --------- Configs & Global Constants --------- */
@@ -22,7 +23,7 @@ const VIRUSTOTAL_API_KEY = process.env.VIRUSTOTAL_API_KEY;
 // Usar el User-Agent estándar para evitar bloqueos
 const AXIOS_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
-// 🚨 CONSTANTE: URL base para la descarga (Usada para el link directo)
+// CONSTANTE: URL base para la descarga (Usada para el link directo)
 const BASE_URL = 'https://apps-masitaprex-v2.fly.dev';
 
 // ----------------------------------------------------
@@ -141,6 +142,7 @@ async function syncAndSaveApk(packageName, version, displayName, source, apkBuff
     await createOrUpdateGithubFile(apkPath, base64Apk, `Sincronizar APK: ${packageName} v${version} (${source})`);
 
     // CONSTRUIR EL ENLACE DE DESCARGA DIRECTO
+    // NOTA: Este enlace ahora será manejado por el nuevo endpoint de Express (ver abajo).
     const downloadUrl = `${BASE_URL}/${apkPath}`; 
 
     // 3. Crear y guardar Metadatos
@@ -275,7 +277,7 @@ function formatGooglePlayMeta(appDetails) {
 
 
 // ---------------------------------------------------
-// OTRAS FUNCIONES (SIN CAMBIOS)
+// OTRAS FUNCIONES (MANTENIDAS)
 // ---------------------------------------------------
 async function findPackageNameByAppName(appName, source) {
     const metaIndexUrl = source === 'fdroid' 
@@ -445,6 +447,44 @@ function syncPopularAppsInBackground() {
 // ---------------------------------------------------
 // ENDPOINTS
 // ---------------------------------------------------
+
+// 🚨 NUEVO ENDPOINT: Manejar la descarga del APK directamente desde GitHub
+app.get("/public/apps/:packageName/apk_:version.apk", async (req, res) => {
+    const { packageName, version } = req.params;
+    const pathInRepo = `public/apps/${packageName}/apk_${version}.apk`;
+    const fileName = `${packageName}_v${version}.apk`;
+
+    try {
+        // 1. Obtener el contenido del archivo de GitHub
+        const file = await octokit.repos.getContent({
+            owner: G_OWNER,
+            repo: G_REPO,
+            path: pathInRepo,
+            mediaType: {
+                format: "raw", // Solicitar el contenido del archivo en formato raw (no base64)
+            }
+        });
+
+        // 2. Establecer las cabeceras para forzar la descarga
+        res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+        res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+        
+        // 3. Enviar el contenido del archivo (que viene como buffer/string)
+        // Ya que solicitamos el formato "raw", el 'file.data' es el contenido binario.
+        // Si hay problemas, podría necesitar Buffer.from(file.data, 'binary') o similar, 
+        // pero `mediaType: { format: "raw" }` generalmente lo maneja Express bien.
+        res.send(file.data);
+
+    } catch (e) {
+        console.error(`Error al servir el APK ${pathInRepo} desde GitHub:`, e.message);
+        if (e.status === 404) {
+            return res.status(404).send("Error: El APK solicitado no fue encontrado en el repositorio.");
+        }
+        return res.status(500).send("Error interno al intentar descargar el APK.");
+    }
+});
+// ---------------------------------------------------
+
 
 /* ---------------------------------
    1. 🔍 ENDPOINT DE BÚSQUEDA Y SINCRONIZACIÓN (SIN CAMBIOS)
