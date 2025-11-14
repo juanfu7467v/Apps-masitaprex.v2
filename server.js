@@ -18,8 +18,8 @@ const G_OWNER = process.env.GITHUB_OWNER;
 const G_REPO = process.env.GITHUB_REPO;
 const MAX_GITHUB_FILE_SIZE_MB = 100;
 
-// USER-AGENT ACTUALIZADO para simular mejor un navegador y evitar el 403
-const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'; 
+// USER-AGENT MÓVIL REFORZADO para intentar evitar el 403
+const USER_AGENT = 'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.140 Mobile Safari/537.36'; 
 
 /* --------- Helpers GitHub --------- */
 async function createOrUpdateGithubFile(pathInRepo, contentBase64, message) {
@@ -62,11 +62,17 @@ async function searchAppAndScrapeInfo(query) {
     
     try {
         const response = await axios.get(searchUrl, {
-            // CABECERAS REFORZADAS
+            // CABECERAS MÁS REFORZADAS PARA EVITAR BLOQUEO (403)
             headers: { 
                 'User-Agent': USER_AGENT,
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Encoding': 'gzip, deflate, br'
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Referer': 'https://www.google.com/', 
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-User': '?1',
+                'Sec-Fetch-Dest': 'document',
+                'Cache-Control': 'max-age=0'
             }
         });
         const $ = cheerio.load(response.data);
@@ -143,7 +149,6 @@ async function searchAppAndScrapeInfo(query) {
         };
         
     } catch (e) {
-        // En caso de 403 o cualquier error de red, imprime el mensaje de error de Axios
         if (e.response && e.response.status === 403) {
             console.error("Error 403: Acceso denegado por APKMirror. Intente otro User-Agent o espere.");
         } else {
@@ -234,7 +239,6 @@ app.post("/api/sync_app_by_search", async (req, res) => {
         const { packageName, version, downloadUrl, displayName, description, iconUrl, screenshots } = appInfo;
 
         // 2. Descargar la APK
-        // Se añade un User-Agent reforzado para la descarga.
         const apkResp = await axios.get(downloadUrl, { 
             responseType: "arraybuffer",
             headers: { 'User-Agent': USER_AGENT }
