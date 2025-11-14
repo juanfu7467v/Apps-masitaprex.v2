@@ -10,8 +10,8 @@ import gplay from "google-play-scraper";
 const app = express();
 app.use(express.json({ limit: "10mb" }));
 
-// 🚀 SOLUCIÓN: Habilitar la carpeta 'public' para servir archivos estáticos (APK, meta, etc.)
-app.use(express.static('public')); 
+// 🚨 SOLUCIÓN: Habilita el servicio de archivos estáticos desde la carpeta 'public'
+app.use(express.static('public'));
 
 /* --------- Configs & Global Constants --------- */
 const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
@@ -22,7 +22,7 @@ const VIRUSTOTAL_API_KEY = process.env.VIRUSTOTAL_API_KEY;
 // Usar el User-Agent estándar para evitar bloqueos
 const AXIOS_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
-// 🚨 CONSTANTE NUEVA: URL base para la descarga (Usada para el link directo)
+// 🚨 CONSTANTE: URL base para la descarga (Usada para el link directo)
 const BASE_URL = 'https://apps-masitaprex-v2.fly.dev';
 
 // ----------------------------------------------------
@@ -120,7 +120,7 @@ async function createOrUpdateGithubFile(pathInRepo, contentBase64, message) {
 }
 
 // ---------------------------------------------------
-// FUNCIÓN CENTRAL DE SINCRONIZACIÓN DE APK (MODIFICADA)
+// FUNCIÓN CENTRAL DE SINCRONIZACIÓN DE APK (SIN CAMBIOS)
 // ---------------------------------------------------
 async function syncAndSaveApk(packageName, version, displayName, source, apkBuffer, metaExtra = {}) {
     if (apkBuffer.length >= MAX_GITHUB_FILE_SIZE_MB * 1024 * 1024) {
@@ -140,7 +140,7 @@ async function syncAndSaveApk(packageName, version, displayName, source, apkBuff
     const apkPath = `public/apps/${packageName}/apk_${version}.apk`;
     await createOrUpdateGithubFile(apkPath, base64Apk, `Sincronizar APK: ${packageName} v${version} (${source})`);
 
-    // 🚨 CONSTRUIR EL ENLACE DE DESCARGA DIRECTO
+    // CONSTRUIR EL ENLACE DE DESCARGA DIRECTO
     const downloadUrl = `${BASE_URL}/${apkPath}`; 
 
     // 3. Crear y guardar Metadatos
@@ -161,7 +161,7 @@ async function syncAndSaveApk(packageName, version, displayName, source, apkBuff
         size: apkBuffer.length,
         addedAt: new Date().toISOString(),
         apkPath,
-        downloadUrl, // 🚨 Nuevo campo de URL de descarga
+        downloadUrl, // Campo de URL de descarga
         virustotal: vtResult
     };
     const metaPath = `public/apps/${packageName}/meta_${version}.json`;
@@ -185,10 +185,6 @@ async function downloadApkFromProxy(packageName, appDetails) {
     }
     
     // 1. Determinar el mejor endpoint de descarga conocido (simulación de servicio proxy)
-    // El endpoint de descarga suele ser:
-    // https://apk-dl.com/details?id={packageName}&version={latestVersion}
-    // y luego necesitas raspar la página para encontrar el enlace directo al APK.
-    
     // Para simplificar y enfocarnos en el error 403, vamos a generar una URL conocida
     // de un servicio proxy popular y DEBE usar el User-Agent
     const downloadUrl = `https://d.apk-dl.com/details?id=${packageName}`; 
@@ -273,7 +269,7 @@ function formatGooglePlayMeta(appDetails) {
         size: 'N/A', 
         addedAt: new Date().toISOString(),
         apkPath: 'N/A (Solo metadatos)',
-        downloadUrl: 'N/A (Solo metadatos)' // También ajustamos esto
+        downloadUrl: 'N/A (Solo metadatos)' 
     };
 }
 
@@ -451,7 +447,7 @@ function syncPopularAppsInBackground() {
 // ---------------------------------------------------
 
 /* ---------------------------------
-   1. 🔍 ENDPOINT DE BÚSQUEDA Y SINCRONIZACIÓN (LÓGICA ACTUALIZADA)
+   1. 🔍 ENDPOINT DE BÚSQUEDA Y SINCRONIZACIÓN (SIN CAMBIOS)
 ------------------------------------*/
 app.get("/api/search_and_sync", async (req, res) => {
     let { q } = req.query; 
@@ -644,7 +640,7 @@ app.get("/api/list_apps", async (req, res) => {
     const tree = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: "public/apps" });
     const apps = [];
     for (const dir of tree.data) {
-      if (dir.type === "dir") apps.push({ packageName: dir.name, path: dir.name });
+      if (dir.type === "dir") apps.push({ packageName: dir.name, path: dir.path });
     }
     return res.json({ ok:true, apps });
   } catch (e) {
