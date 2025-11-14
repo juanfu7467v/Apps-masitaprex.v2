@@ -82,23 +82,39 @@ async function searchAppAndScrapeInfo(query) {
     try {
         await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
         
-        // 1. ESPERAR A QUE EL PRIMER RESULTADO APAREZCA antes de continuar
-        const resultSelector = '.apkm-table-row';
+        // CORRECCIÓN: Usar un selector más estable para el primer resultado
+        // Probamos con el selector de la primera fila de la lista de versiones
+        const resultSelector = '.list-card:first-child .app_versions .appRow';
+        const fallbackSelector = '.apkm-table-row:first-child'; 
+        
+        let finalSelector = resultSelector;
+
         try {
-            await page.waitForSelector(resultSelector, { timeout: 10000 }); // Espera hasta 10 segundos
+            await page.waitForSelector(finalSelector, { timeout: 10000 }); // Espera hasta 10 segundos
         } catch (e) {
-            console.log("No se encontró el selector de resultados de APKMirror. La estructura pudo haber cambiado.");
-            return null;
+             console.error(`Error al esperar el selector principal (${resultSelector}). Intentando selector de fallback.`);
+             finalSelector = fallbackSelector;
+             try {
+                await page.waitForSelector(finalSelector, { timeout: 5000 });
+             } catch (e2) {
+                console.error(`Error al esperar el selector de fallback (${fallbackSelector}).`);
+                return null;
+             }
         }
 
         // 1. Encontrar el primer resultado de la búsqueda
-        const firstResultCard = await page.$(resultSelector); 
+        const firstResultCard = await page.$(finalSelector); 
         if (!firstResultCard) {
-            return null; // No se encontraron resultados (aunque waitForSelector ya lo indicó)
+            console.log("No se encontró ningún elemento de resultado después de esperar.");
+            return null;
         }
         
         // 2. Extraer el enlace a la página de la aplicación
-        const appPageLink = await firstResultCard.$eval('.appRow > div:nth-child(2) > a', a => a.getAttribute('href'));
+        // El enlace a la página de la aplicación está típicamente en la segunda columna.
+        const appPageLink = await firstResultCard.$eval('div:nth-child(2) > a', a => a.getAttribute('href')).catch(e => {
+             console.error("No se pudo extraer el appPageLink:", e.message);
+             return null;
+        });
         
         if (!appPageLink) {
              console.log("No se encontró appPageLink en el resultado de búsqueda.");
@@ -128,6 +144,7 @@ async function searchAppAndScrapeInfo(query) {
             
             const displayName = getText('.app-name') || 'Nombre Desconocido';
             
+            // Selector para el enlace de la última release, asegurando que es un enlace
             const latestReleaseLink = getAttr('#primary_details .app_versions .appRow:first-child .app-name-link', 'href');
             
             let version = '0.0';
@@ -147,7 +164,7 @@ async function searchAppAndScrapeInfo(query) {
             
             const iconUrl = getAttr('.app-icon', 'src') || '';
 
-            // Extraer URL de Descarga 
+            // Extraer URL de Descarga - el botón "Download" al lado de la última versión
             const downloadPageLink = getAttr('#primary_details .app_versions .downloadButton', 'href');
             
             return {
@@ -187,7 +204,7 @@ async function searchAppAndScrapeInfo(query) {
         };
         
     } catch (e) {
-        console.error("Error en el scraping de APKMirror con Puppeteer:", e.message);
+        console.error("Error EN EL SCRAPING (GENERAL):", e.message);
         return null;
     } finally {
         // CERRAR EL NAVEGADOR ES CRÍTICO PARA NO AGOTAR RECURSOS
@@ -201,12 +218,12 @@ async function scrapeFinalDownloadLink(browser, downloadPageUrl) {
     try {
         await page.goto(downloadPageUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
         
-        // Esperar a que el botón de descarga aparezca
+        // Esperar a que el botón final de descarga aparezca
         const finalDownloadSelector = '.accent_bg > a[rel="nofollow"]';
         try {
              await page.waitForSelector(finalDownloadSelector, { timeout: 10000 });
         } catch (e) {
-            console.log("No se pudo encontrar el botón final de descarga.");
+            console.log("No se pudo encontrar el botón final de descarga. Intentando selector de fallback.");
              // Intenta el selector de fallback si el principal falla
              const fallbackLink = await page.evaluate(() => {
                  const fb = document.querySelector('a[rel="nofollow"][href*="/download.php"]');
