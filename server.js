@@ -18,8 +18,8 @@ const G_OWNER = process.env.GITHUB_OWNER;
 const G_REPO = process.env.GITHUB_REPO;
 const MAX_GITHUB_FILE_SIZE_MB = 100;
 
-// USER-AGENT MÓVIL REFORZADO para intentar evitar el 403
-const USER_AGENT = 'Mozilla/5.0 (Linux; Android 10; SM-G981B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.140 Mobile Safari/537.36'; 
+// User-Agent de escritorio estándar (bueno para peticiones HTTP simples)
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36'; 
 
 /* --------- Helpers GitHub --------- */
 async function createOrUpdateGithubFile(pathInRepo, contentBase64, message) {
@@ -55,87 +55,61 @@ async function createOrUpdateGithubFile(pathInRepo, contentBase64, message) {
 }
 
 /* ---------------------------------
-   FUNCIÓN REAL: Búsqueda y Extracción de Metadatos de APKMirror
+   FUNCIÓN REAL: Búsqueda y Extracción de Metadatos de APKPure
 ------------------------------------*/
 async function searchAppAndScrapeInfo(query) {
-    const searchUrl = `https://www.apkmirror.com/?post_type=app_release&searchtype=fuzzy&s=${encodeURIComponent(query)}`;
+    const searchUrl = `https://apkpure.com/search?q=${encodeURIComponent(query)}`;
     
     try {
         const response = await axios.get(searchUrl, {
-            // CABECERAS MÁS REFORZADAS PARA EVITAR BLOQUEO (403)
+            // Cabeceras simples optimizadas para APKPure
             headers: { 
                 'User-Agent': USER_AGENT,
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Referer': 'https://www.google.com/', 
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-User': '?1',
-                'Sec-Fetch-Dest': 'document',
-                'Cache-Control': 'max-age=0'
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             }
         });
         const $ = cheerio.load(response.data);
         
         // 1. Encontrar el primer resultado de la búsqueda
-        const firstResultCard = $('.apkm-table-row').first(); 
-        if (firstResultCard.length === 0) {
+        // La clase del primer resultado en APKPure
+        const firstResultLink = $('.search-result-box a.dd').first().attr('href'); 
+        
+        if (!firstResultLink) {
             return null; // No se encontraron resultados
         }
         
-        // 2. Extraer el enlace a la página de la aplicación
-        const appPageLink = firstResultCard.find('.appRow > div:nth-child(2) > a').attr('href');
-        if (!appPageLink) {
-             console.log("No se encontró appPageLink en el resultado de búsqueda.");
-             return null;
-        }
-        const appPageUrl = `https://www.apkmirror.com${appPageLink}`;
+        const appPageUrl = `https://apkpure.com${firstResultLink}`;
 
-        // 3. Obtener la página de la aplicación para metadatos detallados
+        // 2. Obtener la página de la aplicación para metadatos detallados
         const appResponse = await axios.get(appPageUrl, {
             headers: { 'User-Agent': USER_AGENT }
         });
         const $$ = cheerio.load(appResponse.data);
 
-        // 4. Extraer Metadatos
-        const packageNameMatch = appPageLink.match(/\/app\/([^/]+)\/$/);
+        // 3. Extraer Metadatos
+        const packageNameMatch = appPageUrl.match(/\/app\/([^\/]+)/);
         const packageName = packageNameMatch ? packageNameMatch[1] : 'unknown.package.name';
         
-        const displayName = $$('.app-name').text().trim() || 'Nombre Desconocido';
+        const displayName = $$('.title-widget > h1').text().trim() || 'Nombre Desconocido';
+        const version = $$('.version-table li:contains("Versión:") > p.is-hidden-mobile').text().trim() || '0.0';
         
-        const latestReleaseLink = $$('#primary_details .app_versions .appRow:first-child .app-name-link').attr('href');
+        // La descripción suele estar en una etiqueta div con la clase "synopsis"
+        const description = $$('.synopsis').text().trim().substring(0, 500) + '...' || 'No se encontró descripción.';
         
-        let version = '0.0';
-        if (latestReleaseLink) {
-            const parts = latestReleaseLink.split('/');
-            for (const part of parts.reverse()) {
-                const versionMatch = part.match(/(\d+\.\d+\.\d+(\.\d+)*)/);
-                if (versionMatch) {
-                    version = versionMatch[1];
-                    break;
-                }
-            }
-        }
-        
-        const description = $$('.details-section__description').text().trim().substring(0, 500) + '...' || 'No se encontró descripción.';
-        const iconUrl = $$('.app-icon').attr('src') || '';
+        // URL del ícono (puede requerir manejo de URLs relativas o data-src)
+        const iconUrl = $$('.icon img').attr('src') || '';
 
-        // Extraer URL de Descarga 
-        const downloadPageLink = $$('#primary_details .app_versions .downloadButton').first().attr('href');
+        // 4. Extraer URL de Descarga
+        // El botón de descarga primaria suele ser el más grande con la clase "download-start-btn"
+        const downloadButtonLink = $$('.download-start-btn').attr('href');
         
-        if (!downloadPageLink) {
-             console.log("No se encontró enlace a la página de descarga.");
+        if (!downloadButtonLink) {
+             console.log("No se encontró enlace directo de descarga en la página de la aplicación.");
              return null;
         }
         
-        const downloadPageUrl = `https://www.apkmirror.com${downloadPageLink}`;
-        
-        const finalDownloadLink = await scrapeFinalDownloadLink(downloadPageUrl);
-        
-        if (!finalDownloadLink) {
-             console.log("No se pudo obtener el enlace final de descarga de la APK.");
-             return null;
-        }
+        // APKPure a menudo proporciona el enlace directo al archivo .apk
+        const finalDownloadLink = downloadButtonLink.startsWith('//') ? 'https:' + downloadButtonLink : downloadButtonLink;
 
         return {
             packageName,
@@ -143,54 +117,23 @@ async function searchAppAndScrapeInfo(query) {
             version,
             description,
             iconUrl: iconUrl.startsWith('//') ? 'https:' + iconUrl : iconUrl,
-            screenshots: [], 
+            screenshots: [], // Opcional: Implementar scraping de capturas si es necesario
             downloadUrl: finalDownloadLink, 
-            source: "apkmirror"
+            source: "apkpure"
         };
         
     } catch (e) {
-        if (e.response && e.response.status === 403) {
-            console.error("Error 403: Acceso denegado por APKMirror. Intente otro User-Agent o espere.");
-        } else {
-             console.error("Error en el scraping de APKMirror:", e.message);
+        console.error("Error en el scraping de APKPure:", e.message);
+        // Mostrar detalles del error para depuración
+        if (e.response && e.response.status) {
+            console.error(`Status: ${e.response.status}`);
         }
         return null;
     }
 }
 
-// Función auxiliar para obtener el enlace de descarga final de APKMirror
-async function scrapeFinalDownloadLink(downloadPageUrl) {
-    try {
-        const downloadResponse = await axios.get(downloadPageUrl, {
-            headers: { 
-                'User-Agent': USER_AGENT,
-                'Accept-Encoding': 'gzip, deflate, br'
-            }
-        });
-        const $$$ = cheerio.load(downloadResponse.data);
-        
-        // Buscar el botón final de descarga que contenga el atributo 'data-url' o similar
-        const finalDownloadButton = $$$('.accent_bg > a[rel="nofollow"]').first();
-        
-        if (finalDownloadButton.length > 0) {
-            const finalLink = finalDownloadButton.attr('href');
-            if (finalLink && finalLink.startsWith('/download')) {
-                return `https://www.apkmirror.com${finalLink}`;
-            }
-        }
-        
-        const fallbackLink = $$$('a[rel="nofollow"][href*="/download.php"]').attr('href');
-        if (fallbackLink) {
-            return `https://www.apkmirror.com${fallbackLink}`;
-        }
-        
-        return null; 
-    } catch (e) {
-        console.error("Error al obtener el enlace final de descarga:", e.message);
-        return null;
-    }
-}
-
+// Nota: La función scrapeFinalDownloadLink ya no es necesaria con APKPure
+// ya que el primer enlace de descarga suele ser directo.
 
 /* ---------------------------------
    ENDPOINT 1: Buscar Aplicación
@@ -204,14 +147,14 @@ app.get("/api/search_app", async (req, res) => {
         const appInfo = await searchAppAndScrapeInfo(q);
         
         if (!appInfo) {
-            return res.json({ ok: true, results: [], message: "No se encontraron resultados para la búsqueda." });
+            return res.json({ ok: true, results: [], message: "No se encontraron resultados para la búsqueda en APKPure." });
         }
 
         // Devolvemos el resultado encontrado
         return res.json({ 
             ok: true, 
             results: [appInfo],
-            message: "Resultados de búsqueda scrapeados de APKMirror."
+            message: "Resultados de búsqueda scrapeados de APKPure."
         });
 
     } catch (e) {
@@ -233,15 +176,17 @@ app.post("/api/sync_app_by_search", async (req, res) => {
         // 1. Buscar y extraer metadatos
         const appInfo = await searchAppAndScrapeInfo(query);
         if (!appInfo || !appInfo.downloadUrl) {
-            return res.json({ ok: false, error: "No se encontraron datos completos o URL de descarga para la aplicación." });
+            return res.json({ ok: false, error: "No se encontraron datos completos o URL de descarga para la aplicación en APKPure." });
         }
 
         const { packageName, version, downloadUrl, displayName, description, iconUrl, screenshots } = appInfo;
 
         // 2. Descargar la APK
+        // **IMPORTANTE:** Cuando descargamos de APKPure, a veces la URL de descarga redirige a otra URL con el nombre del archivo.
         const apkResp = await axios.get(downloadUrl, { 
             responseType: "arraybuffer",
-            headers: { 'User-Agent': USER_AGENT }
+            headers: { 'User-Agent': USER_AGENT },
+            maxRedirects: 5 // Permitir redirecciones para seguir la descarga
         });
         const apkBuffer = Buffer.from(apkResp.data);
 
@@ -253,7 +198,7 @@ app.post("/api/sync_app_by_search", async (req, res) => {
         // 4. Guardar APK en GitHub
         const base64Apk = apkBuffer.toString("base64");
         const apkPath = `public/apps/${packageName}/apk_${version}.apk`;
-        await createOrUpdateGithubFile(apkPath, base64Apk, `Sincronizar APK: ${displayName} v${version}`);
+        await createOrUpdateGithubFile(apkPath, base64Apk, `Sincronizar APK: ${displayName} v${version} (APKPure)`);
         
         // 5. Crear Metadatos completos
         const meta = {
@@ -271,12 +216,12 @@ app.post("/api/sync_app_by_search", async (req, res) => {
 
         // 6. Guardar Metadatos en GitHub
         const metaPath = `public/apps/${packageName}/meta_${version}.json`;
-        await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"), `Sincronizar Meta: ${displayName} v${version}`);
+        await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"), `Sincronizar Meta: ${displayName} v${version} (APKPure)`);
 
         return res.json({ 
             ok: true, 
             meta, 
-            message: `APK y Metadatos de ${displayName} v${version} sincronizados exitosamente.` 
+            message: `APK y Metadatos de ${displayName} v${version} sincronizados exitosamente desde APKPure.` 
         });
 
     } catch (e) {
@@ -306,14 +251,15 @@ app.post("/api/sync_popular_apps", async (req, res) => {
             const appInfo = await searchAppAndScrapeInfo(query);
             
             if (!appInfo || !appInfo.downloadUrl) {
-                return { query, ok: false, message: "No se encontraron datos o URL de descarga." };
+                return { query, ok: false, message: "No se encontraron datos o URL de descarga en APKPure." };
             }
 
             const { packageName, version, downloadUrl, displayName } = appInfo;
 
             const apkResp = await axios.get(downloadUrl, { 
                 responseType: "arraybuffer",
-                headers: { 'User-Agent': USER_AGENT }
+                headers: { 'User-Agent': USER_AGENT },
+                maxRedirects: 5
             });
             const apkBuffer = Buffer.from(apkResp.data);
 
@@ -339,14 +285,14 @@ app.post("/api/sync_popular_apps", async (req, res) => {
             };
             
             // Subir APK
-            await createOrUpdateGithubFile(apkPath, base64Apk, `Sincronizar APK Masiva: ${displayName} v${version}`);
+            await createOrUpdateGithubFile(apkPath, base64Apk, `Sincronizar APK Masiva: ${displayName} v${version} (APKPure)`);
             
             // Subir Metadatos
             const metaPath = `public/apps/${packageName}/meta_${version}.json`;
-            await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"), `Sincronizar Meta Masiva: ${displayName} v${version}`);
+            await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"), `Sincronizar Meta Masiva: ${displayName} v${version} (APKPure)`);
 
             successCount++;
-            return { query, ok: true, version, packageName, message: "Sincronizado correctamente." };
+            return { query, ok: true, version, packageName, message: "Sincronizado correctamente desde APKPure." };
 
         } catch (e) {
             console.error(`Error al sincronizar ${query}:`, e.message);
