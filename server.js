@@ -7,7 +7,7 @@ import axios from "axios";
 import FormData from "form-data"; 
 import fs from "fs"; 
 import path from "path"; 
-import * as cheerio from 'cheerio'; // <--- NUEVA DEPENDENCIA
+import * as cheerio from 'cheerio'; 
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -17,7 +17,9 @@ const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
 const G_OWNER = process.env.GITHUB_OWNER;
 const G_REPO = process.env.GITHUB_REPO;
 const MAX_GITHUB_FILE_SIZE_MB = 100;
-const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'; // Para simular un navegador
+
+// USER-AGENT ACTUALIZADO para simular mejor un navegador y evitar el 403
+const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'; 
 
 /* --------- Helpers GitHub --------- */
 async function createOrUpdateGithubFile(pathInRepo, contentBase64, message) {
@@ -60,12 +62,16 @@ async function searchAppAndScrapeInfo(query) {
     
     try {
         const response = await axios.get(searchUrl, {
-            headers: { 'User-Agent': USER_AGENT }
+            // CABECERAS REFORZADAS
+            headers: { 
+                'User-Agent': USER_AGENT,
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Encoding': 'gzip, deflate, br'
+            }
         });
         const $ = cheerio.load(response.data);
         
         // 1. Encontrar el primer resultado de la búsqueda
-        // Selector actualizado para capturar el primer resultado de la tabla.
         const firstResultCard = $('.apkm-table-row').first(); 
         if (firstResultCard.length === 0) {
             return null; // No se encontraron resultados
@@ -86,20 +92,16 @@ async function searchAppAndScrapeInfo(query) {
         const $$ = cheerio.load(appResponse.data);
 
         // 4. Extraer Metadatos
-        // El packageName se extrae de la URL de la página de la app (appPageLink)
         const packageNameMatch = appPageLink.match(/\/app\/([^/]+)\/$/);
         const packageName = packageNameMatch ? packageNameMatch[1] : 'unknown.package.name';
         
         const displayName = $$('.app-name').text().trim() || 'Nombre Desconocido';
         
-        // Buscar la versión en el primer app-name-link de la página de releases
         const latestReleaseLink = $$('#primary_details .app_versions .appRow:first-child .app-name-link').attr('href');
         
         let version = '0.0';
         if (latestReleaseLink) {
-            // El formato es típicamente: /apk/facebook/facebook-lite/facebook-lite-324-0-0-2-120-release/
             const parts = latestReleaseLink.split('/');
-            // Buscamos un segmento que contenga números de versión
             for (const part of parts.reverse()) {
                 const versionMatch = part.match(/(\d+\.\d+\.\d+(\.\d+)*)/);
                 if (versionMatch) {
@@ -109,11 +111,10 @@ async function searchAppAndScrapeInfo(query) {
             }
         }
         
-        // Extracción de metadatos más robusta (si es posible)
         const description = $$('.details-section__description').text().trim().substring(0, 500) + '...' || 'No se encontró descripción.';
         const iconUrl = $$('.app-icon').attr('src') || '';
 
-        // Extraer URL de Descarga - Usamos el enlace de la *primera* versión listada
+        // Extraer URL de Descarga 
         const downloadPageLink = $$('#primary_details .app_versions .downloadButton').first().attr('href');
         
         if (!downloadPageLink) {
@@ -142,7 +143,12 @@ async function searchAppAndScrapeInfo(query) {
         };
         
     } catch (e) {
-        console.error("Error en el scraping de APKMirror:", e);
+        // En caso de 403 o cualquier error de red, imprime el mensaje de error de Axios
+        if (e.response && e.response.status === 403) {
+            console.error("Error 403: Acceso denegado por APKMirror. Intente otro User-Agent o espere.");
+        } else {
+             console.error("Error en el scraping de APKMirror:", e.message);
+        }
         return null;
     }
 }
@@ -151,23 +157,23 @@ async function searchAppAndScrapeInfo(query) {
 async function scrapeFinalDownloadLink(downloadPageUrl) {
     try {
         const downloadResponse = await axios.get(downloadPageUrl, {
-            headers: { 'User-Agent': USER_AGENT }
+            headers: { 
+                'User-Agent': USER_AGENT,
+                'Accept-Encoding': 'gzip, deflate, br'
+            }
         });
         const $$$ = cheerio.load(downloadResponse.data);
         
-        // Selector ajustado: el botón final de descarga
+        // Buscar el botón final de descarga que contenga el atributo 'data-url' o similar
         const finalDownloadButton = $$$('.accent_bg > a[rel="nofollow"]').first();
         
         if (finalDownloadButton.length > 0) {
             const finalLink = finalDownloadButton.attr('href');
             if (finalLink && finalLink.startsWith('/download')) {
-                // Este es el enlace final que dispara la descarga.
                 return `https://www.apkmirror.com${finalLink}`;
             }
         }
         
-        // Si no se encuentra el enlace directo, a veces está en la página principal del download.
-        // Intentamos un selector más amplio si el primero falla
         const fallbackLink = $$$('a[rel="nofollow"][href*="/download.php"]').attr('href');
         if (fallbackLink) {
             return `https://www.apkmirror.com${fallbackLink}`;
@@ -228,7 +234,7 @@ app.post("/api/sync_app_by_search", async (req, res) => {
         const { packageName, version, downloadUrl, displayName, description, iconUrl, screenshots } = appInfo;
 
         // 2. Descargar la APK
-        // Se añade un User-Agent para la descarga, ya que algunas fuentes lo requieren.
+        // Se añade un User-Agent reforzado para la descarga.
         const apkResp = await axios.get(downloadUrl, { 
             responseType: "arraybuffer",
             headers: { 'User-Agent': USER_AGENT }
@@ -285,14 +291,12 @@ const POPULAR_APPS = [
     "instagram",
     "telegram",
     "spotify"
-    // Puedes añadir más nombres de apps aquí
 ];
 
 app.post("/api/sync_popular_apps", async (req, res) => {
     let results = [];
     let successCount = 0;
     
-    // Función de ayuda para la sincronización basada en query (reutilizada de sync_app_by_search)
     const syncSingleApp = async (query) => {
         try {
             const appInfo = await searchAppAndScrapeInfo(query);
@@ -317,7 +321,6 @@ app.post("/api/sync_popular_apps", async (req, res) => {
             const base64Apk = apkBuffer.toString("base64");
             const apkPath = `public/apps/${packageName}/apk_${version}.apk`;
             
-            // Creamos un objeto meta con todos los datos necesarios
             const meta = {
                 source: appInfo.source,
                 packageName,
@@ -347,7 +350,6 @@ app.post("/api/sync_popular_apps", async (req, res) => {
         }
     };
 
-    // Procesar todas las aplicaciones populares en serie para evitar problemas de concurrencia/rate limit
     for (const appQuery of POPULAR_APPS) {
         const result = await syncSingleApp(appQuery);
         results.push(result);
