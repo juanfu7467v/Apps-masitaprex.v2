@@ -10,6 +10,9 @@ import gplay from "google-play-scraper";
 const app = express();
 app.use(express.json({ limit: "10mb" }));
 
+// 🚀 SOLUCIÓN: Habilitar la carpeta 'public' para servir archivos estáticos (APK, meta, etc.)
+app.use(express.static('public')); 
+
 /* --------- Configs & Global Constants --------- */
 const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
 const G_OWNER = process.env.GITHUB_OWNER;
@@ -641,7 +644,7 @@ app.get("/api/list_apps", async (req, res) => {
     const tree = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: "public/apps" });
     const apps = [];
     for (const dir of tree.data) {
-      if (dir.type === "dir") apps.push({ packageName: dir.name, path: dir.path });
+      if (dir.type === "dir") apps.push({ packageName: dir.name, path: dir.name });
     }
     return res.json({ ok:true, apps });
   } catch (e) {
