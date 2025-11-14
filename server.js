@@ -82,10 +82,19 @@ async function searchAppAndScrapeInfo(query) {
     try {
         await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
         
+        // 1. ESPERAR A QUE EL PRIMER RESULTADO APAREZCA antes de continuar
+        const resultSelector = '.apkm-table-row';
+        try {
+            await page.waitForSelector(resultSelector, { timeout: 10000 }); // Espera hasta 10 segundos
+        } catch (e) {
+            console.log("No se encontró el selector de resultados de APKMirror. La estructura pudo haber cambiado.");
+            return null;
+        }
+
         // 1. Encontrar el primer resultado de la búsqueda
-        const firstResultCard = await page.$('.apkm-table-row'); 
+        const firstResultCard = await page.$(resultSelector); 
         if (!firstResultCard) {
-            return null; // No se encontraron resultados
+            return null; // No se encontraron resultados (aunque waitForSelector ya lo indicó)
         }
         
         // 2. Extraer el enlace a la página de la aplicación
@@ -99,10 +108,18 @@ async function searchAppAndScrapeInfo(query) {
 
         // 3. Navegar a la página de la aplicación para metadatos detallados
         await page.goto(appPageUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        
+        // Esperar a que el título principal de la aplicación esté cargado
+        try {
+            await page.waitForSelector('.app-name', { timeout: 5000 });
+        } catch (e) {
+            console.log("No se pudo cargar la página de detalles de la aplicación.");
+            return null;
+        }
+
 
         // 4. Extraer Metadatos usando page.evaluate
         const metaData = await page.evaluate((appPageLink) => {
-            const getInnerHtml = (selector) => document.querySelector(selector)?.innerHTML.trim() || '';
             const getText = (selector) => document.querySelector(selector)?.textContent.trim() || '';
             const getAttr = (selector, attr) => document.querySelector(selector)?.getAttribute(attr) || '';
 
@@ -125,7 +142,9 @@ async function searchAppAndScrapeInfo(query) {
                 }
             }
             
-            const description = getText('.details-section__description').substring(0, 500) + '...' || 'No se encontró descripción.';
+            const descriptionElement = document.querySelector('.details-section__description');
+            let description = descriptionElement ? descriptionElement.textContent.trim().substring(0, 500) + '...' : 'No se encontró descripción.';
+            
             const iconUrl = getAttr('.app-icon', 'src') || '';
 
             // Extraer URL de Descarga 
@@ -182,10 +201,23 @@ async function scrapeFinalDownloadLink(browser, downloadPageUrl) {
     try {
         await page.goto(downloadPageUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
         
+        // Esperar a que el botón de descarga aparezca
+        const finalDownloadSelector = '.accent_bg > a[rel="nofollow"]';
+        try {
+             await page.waitForSelector(finalDownloadSelector, { timeout: 10000 });
+        } catch (e) {
+            console.log("No se pudo encontrar el botón final de descarga.");
+             // Intenta el selector de fallback si el principal falla
+             const fallbackLink = await page.evaluate(() => {
+                 const fb = document.querySelector('a[rel="nofollow"][href*="/download.php"]');
+                 return fb ? `https://www.apkmirror.com${fb.getAttribute('href')}` : null;
+             });
+             return fallbackLink;
+        }
+        
         // Buscar el botón final de descarga que contenga el atributo 'href'
-        const finalLink = await page.evaluate(() => {
-            // Buscamos el enlace del botón final de descarga
-            const finalDownloadButton = document.querySelector('.accent_bg > a[rel="nofollow"]');
+        const finalLink = await page.evaluate((finalDownloadSelector) => {
+            const finalDownloadButton = document.querySelector(finalDownloadSelector);
             
             if (finalDownloadButton) {
                 const link = finalDownloadButton.getAttribute('href');
@@ -193,15 +225,8 @@ async function scrapeFinalDownloadLink(browser, downloadPageUrl) {
                     return `https://www.apkmirror.com${link}`;
                 }
             }
-            
-            // Fallback (por si el selector cambia)
-            const fallbackLink = document.querySelector('a[rel="nofollow"][href*="/download.php"]');
-            if (fallbackLink) {
-                return `https://www.apkmirror.com${fallbackLink.getAttribute('href')}`;
-            }
-            
             return null;
-        });
+        }, finalDownloadSelector);
 
         return finalLink; 
     } catch (e) {
@@ -213,7 +238,7 @@ async function scrapeFinalDownloadLink(browser, downloadPageUrl) {
 }
 
 /* ---------------------------------
-   ENDPOINT 1: Buscar Aplicación (AÑADIDO CORRECTAMENTE)
+   ENDPOINT 1: Buscar Aplicación
    Uso: GET /api/search_app?q=facebook
 ------------------------------------*/
 app.get("/api/search_app", async (req, res) => {
@@ -236,8 +261,6 @@ app.get("/api/search_app", async (req, res) => {
 
     } catch (e) {
         console.error(e);
-        // Si el error es un problema de Puppeteer (ej. tiempo de espera),
-        // devuélvelo como error 500
         return res.status(500).json({ ok: false, error: e.message });
     }
 });
