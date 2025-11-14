@@ -6,7 +6,9 @@ app = "apk-sync-server-name" # <--- CAMBIA ESTO por el nombre de tu app en Fly.i
 primary_region = "lim" # Puedes elegir la región más cercana
 
 [build]
-  builder = "paketobuildpacks/builder-nodejs-optimized"
+  # CAMBIO: Usamos una etiqueta específica para el builder de Node.js de Paketo,
+  # ya que 'optimized:latest' parece haber sido eliminado o movido.
+  builder = "paketobuildpacks/builder-nodejs:0.0.101-cnbs" 
 
 [env]
   PORT = "3000"
