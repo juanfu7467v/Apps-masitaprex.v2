@@ -19,7 +19,7 @@ const VIRUSTOTAL_API_KEY = process.env.VIRUSTOTAL_API_KEY;
 const AXIOS_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
 // ----------------------------------------------------
-// FUNCIÓN HELPER: Verificación con VirusTotal (CORREGIDA)
+// FUNCIÓN HELPER: Verificación con VirusTotal
 // ----------------------------------------------------
 /**
  * Envía un archivo a VirusTotal para escanear y espera el resultado.
@@ -40,7 +40,6 @@ async function scanWithVirusTotal(apkBuffer, fileName) {
         const uploadResponse = await axios.post('https://www.virustotal.com/api/v3/files', form, {
             headers: {
                 ...form.getHeaders(),
-                // ¡AQUÍ ESTABA EL ERROR! CORREGIDO A VIRUSTOTAL_API_KEY
                 'x-apikey': VIRUSTOTAL_API_KEY, 
             },
             maxBodyLength: Infinity,
@@ -114,12 +113,47 @@ async function createOrUpdateGithubFile(pathInRepo, contentBase64, message) {
 }
 
 // ---------------------------------------------------
-// FUNCIONES CENTRALES DE SINCRONIZACIÓN (MEJORADAS PARA METADATOS)
+// NUEVA FUNCIÓN DE BÚSQUEDA POR NOMBRE
+// ---------------------------------------------------
+/**
+ * Busca el PackageName de una aplicación basándose en su nombre visible.
+ * @param {string} appName - El nombre de la aplicación a buscar (ej: "NewPipe").
+ * @param {string} source - 'fdroid' o 'izzyondroid'.
+ * @returns {string|null} El PackageName si se encuentra, de lo contrario null.
+ */
+async function findPackageNameByAppName(appName, source) {
+    const metaIndexUrl = source === 'fdroid' 
+        ? `https://f-droid.org/repo/index.json`
+        : `https://apt.izzysoft.de/fdroid/repo/index.json`;
+
+    try {
+        const query = appName.toLowerCase();
+        const response = await axios.get(metaIndexUrl, { headers: { 'User-Agent': AXIOS_USER_AGENT } });
+        const appInfoList = response.data.apps;
+
+        // Búsqueda simple: Coincidencia en el nombre o en el nombre localizado (en-US)
+        const foundApp = appInfoList.find(app => {
+            const name = app.name ? app.name.toLowerCase() : '';
+            const localizedName = app.localized?.['en-US']?.name ? app.localized['en-US'].name.toLowerCase() : '';
+            
+            // Si el nombre de la app (o el nombre localizado) contiene la consulta
+            return name.includes(query) || localizedName.includes(query);
+        });
+
+        return foundApp ? foundApp.packageName : null;
+    } catch (e) {
+        console.error(`Error al buscar nombre en ${source}:`, e.message);
+        return null;
+    }
+}
+
+
+// ---------------------------------------------------
+// FUNCIONES CENTRALES DE SINCRONIZACIÓN (SIN CAMBIOS)
 // ---------------------------------------------------
 
 /**
  * Función para obtener metadatos y APK de F-Droid o IzzyOnDroid.
- * Se ha mejorado para obtener más metadatos disponibles.
  */
 async function syncFromRepo(packageName, source) {
     const apiUrl = source === 'fdroid' 
@@ -138,7 +172,7 @@ async function syncFromRepo(packageName, source) {
     }
 
     const latestVersion = Object.keys(appData).sort().pop();
-    const latestMeta = appData[latestVersion].pop(); // Metadatos del archivo APK
+    const latestMeta = appData[latestVersion].pop(); 
 
     const version = latestMeta.versionName || latestVersion;
     const apkFileName = latestMeta.apkName;
@@ -158,16 +192,13 @@ async function syncFromRepo(packageName, source) {
 
         if (foundApp) {
             extendedMeta = {
-                summary: foundApp.localized?.['en-US']?.summary || foundApp.summary, // Usar 'en-US' o 'es' si está disponible
+                summary: foundApp.localized?.['en-US']?.summary || foundApp.summary,
                 description: foundApp.localized?.['en-US']?.description || foundApp.description, 
                 screenshots: foundApp.localized?.['en-US']?.screenshots || foundApp.screenshots || [],
                 warnings: foundApp.localized?.['en-US']?.issue || foundApp.issue,
-                // También buscamos en español por si acaso
                 summary_es: foundApp.localized?.es?.summary,
                 description_es: foundApp.localized?.es?.description,
-                
             };
-            // Las capturas de F-Droid son solo nombres de archivo, hay que construir el URL.
             extendedMeta.screenshots = extendedMeta.screenshots.map(fileName => {
                 return repoBaseUrl + 'screenshots/' + fileName;
             });
@@ -198,18 +229,18 @@ async function syncFromRepo(packageName, source) {
         packageName,
         displayName: latestMeta.localized || packageName, 
         version,
-        iconUrl: latestMeta.icon ? repoBaseUrl + 'icons/' + latestMeta.icon : null, // URL completa del icono
+        iconUrl: latestMeta.icon ? repoBaseUrl + 'icons/' + latestMeta.icon : null,
         
         // Contenido
         summary: extendedMeta.summary || extendedMeta.summary_es || 'No summary available.',
         description: extendedMeta.description || extendedMeta.description_es || 'No description available in API meta.',
         screenshots: extendedMeta.screenshots || [],
-        warnings: extendedMeta.warnings || null, // Aclaraciones sobre seguridad/issues
+        warnings: extendedMeta.warnings || null, 
         
         // Campos técnicos:
         size: apkBuffer.length,
         addedAt: new Date().toISOString(),
-        apkPath // Ruta del archivo APK en GitHub
+        apkPath 
     };
     const metaPath = `public/apps/${packageName}/meta_${version}.json`;
     await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"), `Sincronizar Meta: ${packageName} v${version} (${source})`);
@@ -218,7 +249,7 @@ async function syncFromRepo(packageName, source) {
 }
 
 /**
- * Función para obtener metadatos y APK de GitHub Releases.
+ * Función para obtener metadatos y APK de GitHub Releases. (SIN CAMBIOS)
  */
 async function syncFromGitHubRelease(repo, packageName) {
     const [owner, repoName] = repo.split("/");
@@ -281,7 +312,7 @@ async function syncFromGitHubRelease(repo, packageName) {
 
 
 // ---------------------------------------------------
-// FUNCIONES DE FONDO PARA EL CATÁLOGO MASIVO
+// FUNCIONES DE FONDO PARA EL CATÁLOGO MASIVO (SIN CAMBIOS)
 // ---------------------------------------------------
 
 const POPULAR_APPS_FDROID = [
@@ -320,8 +351,6 @@ function syncPopularAppsInBackground() {
         }
     };
     
-    // Ejecutar todas las sincronizaciones de forma secuencial y en segundo plano.
-    // Usamos .then/.catch en lugar de async/await directo en la función principal para que no bloquee el server.
     (async () => {
         for (const app of POPULAR_APPS_FDROID) {
             try {
@@ -350,37 +379,63 @@ function syncPopularAppsInBackground() {
 // ---------------------------------------------------
 
 /* ---------------------------------
-   1. 🔍 ENDPOINT DE BÚSQUEDA Y SINCRONIZACIÓN (search_and_sync)
+   1. 🔍 ENDPOINT DE BÚSQUEDA Y SINCRONIZACIÓN (MODIFICADO)
+   Ahora busca por nombre si no es un packageName/repo obvio.
 ------------------------------------*/
 app.get("/api/search_and_sync", async (req, res) => {
-    const { q } = req.query; 
+    let { q } = req.query; // q puede ser nombre de app, packageName, o repo
     if (!q) return res.status(400).json({ ok: false, error: "El parámetro 'q' (consulta) es requerido." });
 
     let appInfo = null;
     let errors = [];
+    let packageName = q; // Inicialmente asumimos que q es el packageName/repo
 
-    // Intento 1: F-Droid
+    // 0. Intentar buscar por nombre de APP si no parece ser un packageName (ej: "Facebook")
+    const isPackageName = packageName.includes('.');
+    const isRepo = packageName.includes('/');
+    
+    if (!isPackageName && !isRepo) {
+        console.log(`Buscando PackageName para el nombre: ${q}`);
+        
+        let foundPackage = await findPackageNameByAppName(q, 'fdroid');
+        let source = 'F-Droid';
+
+        if (!foundPackage) {
+            foundPackage = await findPackageNameByAppName(q, 'izzyondroid');
+            source = 'IzzyOnDroid';
+        }
+
+        if (foundPackage) {
+            packageName = foundPackage;
+            errors.push(`Encontrado: El nombre de app '${q}' corresponde al paquete: ${packageName} en ${source}.`);
+        } else {
+            errors.push(`Advertencia: El nombre de app '${q}' no se pudo mapear a un packageName conocido. Intentando sincronizarlo directamente.`);
+        }
+    }
+
+
+    // 1. Intento: F-Droid (usando packageName)
     if (!appInfo) {
         try {
-            appInfo = await syncFromRepo(q, 'fdroid');
+            appInfo = await syncFromRepo(packageName, 'fdroid');
         } catch (e) {
             errors.push(`F-Droid falló: ${e.message.includes('Paquete') ? e.message : 'Error de API/descarga.'}`);
         }
     }
 
-    // Intento 2: IzzyOnDroid
+    // 2. Intento: IzzyOnDroid (usando packageName)
     if (!appInfo) {
         try {
-            appInfo = await syncFromRepo(q, 'izzyondroid');
+            appInfo = await syncFromRepo(packageName, 'izzyondroid');
         } catch (e) {
             errors.push(`IzzyOnDroid falló: ${e.message.includes('Paquete') ? e.message : 'Error de API/descarga.'}`);
         }
     }
 
-    // Intento 3: GitHub Releases
-    if (!appInfo && q.includes('/')) {
+    // 3. Intento: GitHub Releases (asumiendo que q es el formato owner/repo)
+    if (!appInfo && packageName.includes('/')) {
         try {
-            appInfo = await syncFromGitHubRelease(q);
+            appInfo = await syncFromGitHubRelease(packageName);
         } catch (e) {
             errors.push(`GitHub Releases falló: ${e.message.includes('No se encontró') ? e.message : 'Error de API/descarga.'}`);
         }
@@ -396,7 +451,7 @@ app.get("/api/search_and_sync", async (req, res) => {
     } else {
         return res.status(404).json({
             ok: false,
-            error: `La aplicación '${q}' no se encontró en ninguna fuente automatizada (F-Droid, IzzyOnDroid, GitHub).`,
+            error: `La aplicación o paquete '${q}' no se encontró ni se pudo sincronizar.`,
             details: errors,
         });
     }
@@ -404,7 +459,7 @@ app.get("/api/search_and_sync", async (req, res) => {
 
 
 /* ---------------------------------
-   2. ⭐️ ENDPOINT DE CATÁLOGO MASIVO (sync_popular_apps)
+   2. ⭐️ ENDPOINT DE CATÁLOGO MASIVO (sync_popular_apps) (SIN CAMBIOS)
 ------------------------------------*/
 app.post("/api/sync_popular_apps", (req, res) => {
     const result = syncPopularAppsInBackground();
@@ -418,7 +473,7 @@ app.post("/api/sync_popular_apps", (req, res) => {
 
 
 /* ---------------------------------
-   3. ENDPOINTS INDIVIDUALES (sync_fdroid, sync_izzyondroid, etc.)
+   3. ENDPOINTS INDIVIDUALES (SIN CAMBIOS)
 ------------------------------------*/
 app.get("/api/sync_fdroid", async (req, res) => {
     const { packageName } = req.query;
@@ -510,7 +565,7 @@ app.post("/api/manual_add", async (req, res) => {
 });
 
 /* ---------------------------------
-   4. 🔍 ENDPOINTS DE LISTADO (list_apps, get_app_meta)
+   4. 🔍 ENDPOINTS DE LISTADO (list_apps, get_app_meta) (SIN CAMBIOS)
 ------------------------------------*/
 
 app.get("/api/list_apps", async (req, res) => {
