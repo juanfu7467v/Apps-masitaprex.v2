@@ -5,6 +5,8 @@ dotenv.config();
 import { Octokit } from "@octokit/rest";
 import axios from "axios";
 import FormData from "form-data"; 
+import gplay from "google-play-scraper"; // <-- NUEVA IMPORTACIÓN
+
 // fs, path, cheerio, puppeteer ya no se usan
 
 const app = express();
@@ -19,7 +21,7 @@ const VIRUSTOTAL_API_KEY = process.env.VIRUSTOTAL_API_KEY;
 const AXIOS_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
 // ----------------------------------------------------
-// FUNCIÓN HELPER: Verificación con VirusTotal
+// FUNCIÓN HELPER: Verificación con VirusTotal (SIN CAMBIOS)
 // ----------------------------------------------------
 /**
  * Envía un archivo a VirusTotal para escanear y espera el resultado.
@@ -113,13 +115,77 @@ async function createOrUpdateGithubFile(pathInRepo, contentBase64, message) {
 }
 
 // ---------------------------------------------------
-// NUEVA FUNCIÓN DE BÚSQUEDA POR NOMBRE
+// FUNCIONES DE BÚSQUEDA Y METADATOS DE GOOGLE PLAY (NUEVAS)
+// ---------------------------------------------------
+
+/**
+ * Busca un packageName en Google Play por el nombre de la app.
+ */
+async function searchGooglePlay(appName) {
+    try {
+        const results = await gplay.search({
+            term: appName,
+            num: 5, // Obtener los 5 resultados principales
+            lang: 'es', 
+            country: 'us' // Búsqueda en idioma español/región US
+        });
+
+        if (results && results.length > 0) {
+            // Devolver el packageName del primer resultado más relevante
+            return results[0].appId;
+        }
+        return null;
+    } catch (e) {
+        console.error("Error en searchGooglePlay:", e.message);
+        return null;
+    }
+}
+
+/**
+ * Obtiene metadatos completos de una app en Google Play.
+ */
+async function getGooglePlayMeta(packageName) {
+    try {
+        const appDetails = await gplay.app({
+            appId: packageName,
+            lang: 'es',
+            country: 'us'
+        });
+
+        // Formatear los metadatos al formato que se usa en tu sistema
+        const meta = {
+            source: "google_play_scraper",
+            packageName: appDetails.appId,
+            displayName: appDetails.title,
+            version: appDetails.version || 'unknown',
+            iconUrl: appDetails.icon,
+            
+            // Contenido
+            summary: appDetails.summary,
+            description: appDetails.descriptionHTML, // Descripcion completa en HTML
+            screenshots: appDetails.screenshots || [],
+            warnings: "ADVERTENCIA: Solo se obtuvieron metadatos. El APK no se puede descargar desde Google Play Store con esta herramienta.",
+            
+            // Campos técnicos:
+            size: 'N/A', // No disponible en scraper
+            addedAt: new Date().toISOString(),
+            apkPath: 'N/A (Solo metadatos)'
+        };
+        return { meta, message: "Metadatos obtenidos de Google Play Store." };
+
+    } catch (e) {
+        console.error("Error en getGooglePlayMeta:", e.message);
+        throw new Error(`No se pudieron obtener metadatos de Google Play para ${packageName}.`);
+    }
+}
+
+
+// ---------------------------------------------------
+// FUNCIÓN DE BÚSQUEDA POR NOMBRE (F-DROID/IZZYONDROID)
 // ---------------------------------------------------
 /**
- * Busca el PackageName de una aplicación basándose en su nombre visible.
- * @param {string} appName - El nombre de la aplicación a buscar (ej: "NewPipe").
- * @param {string} source - 'fdroid' o 'izzyondroid'.
- * @returns {string|null} El PackageName si se encuentra, de lo contrario null.
+ * Busca el PackageName de una aplicación basándose en su nombre visible en repos FOSS.
+ * (SIN CAMBIOS)
  */
 async function findPackageNameByAppName(appName, source) {
     const metaIndexUrl = source === 'fdroid' 
@@ -131,12 +197,10 @@ async function findPackageNameByAppName(appName, source) {
         const response = await axios.get(metaIndexUrl, { headers: { 'User-Agent': AXIOS_USER_AGENT } });
         const appInfoList = response.data.apps;
 
-        // Búsqueda simple: Coincidencia en el nombre o en el nombre localizado (en-US)
         const foundApp = appInfoList.find(app => {
             const name = app.name ? app.name.toLowerCase() : '';
             const localizedName = app.localized?.['en-US']?.name ? app.localized['en-US'].name.toLowerCase() : '';
             
-            // Si el nombre de la app (o el nombre localizado) contiene la consulta
             return name.includes(query) || localizedName.includes(query);
         });
 
@@ -149,13 +213,11 @@ async function findPackageNameByAppName(appName, source) {
 
 
 // ---------------------------------------------------
-// FUNCIONES CENTRALES DE SINCRONIZACIÓN (SIN CAMBIOS)
+// FUNCIONES CENTRALES DE SINCRONIZACIÓN (F-DROID/IZZYONDROID/GITHUB) (SIN CAMBIOS)
 // ---------------------------------------------------
-
-/**
- * Función para obtener metadatos y APK de F-Droid o IzzyOnDroid.
- */
+// (Mantienen la lógica para descargar APKs)
 async function syncFromRepo(packageName, source) {
+    // ... (El cuerpo de syncFromRepo es el mismo, omitido aquí por brevedad)
     const apiUrl = source === 'fdroid' 
         ? `https://f-droid.org/repo/index-v1.json`
         : `https://apt.izzysoft.de/fdroid/repo/index-v1.json`;
@@ -248,10 +310,8 @@ async function syncFromRepo(packageName, source) {
     return { meta, message: "APK sincronizado.", source };
 }
 
-/**
- * Función para obtener metadatos y APK de GitHub Releases. (SIN CAMBIOS)
- */
 async function syncFromGitHubRelease(repo, packageName) {
+    // ... (El cuerpo de syncFromGitHubRelease es el mismo, omitido aquí por brevedad)
     const [owner, repoName] = repo.split("/");
     const pName = packageName || repoName;
     
@@ -314,6 +374,7 @@ async function syncFromGitHubRelease(repo, packageName) {
 // ---------------------------------------------------
 // FUNCIONES DE FONDO PARA EL CATÁLOGO MASIVO (SIN CAMBIOS)
 // ---------------------------------------------------
+// (Omitido por brevedad, no hay cambios)
 
 const POPULAR_APPS_FDROID = [
     { name: "NewPipe", package: "org.schabi.newpipe" },
@@ -328,7 +389,6 @@ const POPULAR_APPS_GITHUB = [
     { name: "ReVanced Manager", repo: "revanced/revanced-manager" }, 
 ];
 
-// Función de fondo para la sincronización masiva
 function syncPopularAppsInBackground() {
     console.log("--- INICIANDO PROCESO DE SINCRONIZACIÓN MASIVA EN SEGUNDO PLANO ---");
     
@@ -379,24 +439,24 @@ function syncPopularAppsInBackground() {
 // ---------------------------------------------------
 
 /* ---------------------------------
-   1. 🔍 ENDPOINT DE BÚSQUEDA Y SINCRONIZACIÓN (MODIFICADO)
-   Ahora busca por nombre si no es un packageName/repo obvio.
+   1. 🔍 ENDPOINT DE BÚSQUEDA Y SINCRONIZACIÓN (MODIFICADO para Google Play)
 ------------------------------------*/
 app.get("/api/search_and_sync", async (req, res) => {
-    let { q } = req.query; // q puede ser nombre de app, packageName, o repo
+    let { q } = req.query; 
     if (!q) return res.status(400).json({ ok: false, error: "El parámetro 'q' (consulta) es requerido." });
 
     let appInfo = null;
     let errors = [];
-    let packageName = q; // Inicialmente asumimos que q es el packageName/repo
+    let packageName = q; 
 
-    // 0. Intentar buscar por nombre de APP si no parece ser un packageName (ej: "Facebook")
     const isPackageName = packageName.includes('.');
     const isRepo = packageName.includes('/');
     
+    // Si la consulta es un nombre de app (ej: "Facebook")
     if (!isPackageName && !isRepo) {
         console.log(`Buscando PackageName para el nombre: ${q}`);
         
+        // **A. Intentar buscar primero en FOSS (F-Droid/IzzyOnDroid)**
         let foundPackage = await findPackageNameByAppName(q, 'fdroid');
         let source = 'F-Droid';
 
@@ -404,18 +464,25 @@ app.get("/api/search_and_sync", async (req, res) => {
             foundPackage = await findPackageNameByAppName(q, 'izzyondroid');
             source = 'IzzyOnDroid';
         }
-
-        if (foundPackage) {
+        
+        // **B. Si no se encuentra en FOSS, buscar en Google Play**
+        if (!foundPackage) {
+            const gpPackage = await searchGooglePlay(q);
+            if (gpPackage) {
+                 packageName = gpPackage;
+                 errors.push(`Encontrado: El nombre de app '${q}' corresponde al paquete: ${packageName} en Google Play.`);
+            } else {
+                 errors.push(`Advertencia: El nombre de app '${q}' no se pudo mapear a un packageName conocido en ninguna fuente.`);
+            }
+        } else {
             packageName = foundPackage;
             errors.push(`Encontrado: El nombre de app '${q}' corresponde al paquete: ${packageName} en ${source}.`);
-        } else {
-            errors.push(`Advertencia: El nombre de app '${q}' no se pudo mapear a un packageName conocido. Intentando sincronizarlo directamente.`);
         }
     }
 
 
-    // 1. Intento: F-Droid (usando packageName)
-    if (!appInfo) {
+    // Intento 1: F-Droid (usando packageName) - Solo si el packageName encontrado NO es de Google Play
+    if (!appInfo && packageName && (isRepo || !packageName.startsWith('com.') || packageName.includes('fdroid') || packageName.includes('org.'))) {
         try {
             appInfo = await syncFromRepo(packageName, 'fdroid');
         } catch (e) {
@@ -423,7 +490,7 @@ app.get("/api/search_and_sync", async (req, res) => {
         }
     }
 
-    // 2. Intento: IzzyOnDroid (usando packageName)
+    // Intento 2: IzzyOnDroid (usando packageName)
     if (!appInfo) {
         try {
             appInfo = await syncFromRepo(packageName, 'izzyondroid');
@@ -432,7 +499,7 @@ app.get("/api/search_and_sync", async (req, res) => {
         }
     }
 
-    // 3. Intento: GitHub Releases (asumiendo que q es el formato owner/repo)
+    // Intento 3: GitHub Releases (asumiendo que q es el formato owner/repo)
     if (!appInfo && packageName.includes('/')) {
         try {
             appInfo = await syncFromGitHubRelease(packageName);
@@ -440,6 +507,18 @@ app.get("/api/search_and_sync", async (req, res) => {
             errors.push(`GitHub Releases falló: ${e.message.includes('No se encontró') ? e.message : 'Error de API/descarga.'}`);
         }
     }
+    
+    // Intento 4: Metadatos de Google Play (Si el paquete no fue sincronizado, intentar obtener solo metadatos si parece un paquete comercial)
+    if (!appInfo && packageName.includes('.')) {
+        try {
+            const metaResult = await getGooglePlayMeta(packageName);
+            appInfo = { meta: metaResult.meta, source: "Google Play Metadata Only" };
+            errors.push("ADVERTENCIA: Se obtuvieron metadatos de Google Play. La descarga del APK NO está disponible.");
+        } catch (e) {
+            errors.push(`Google Play Metadatos falló: ${e.message}`);
+        }
+    }
+
 
     if (appInfo) {
         return res.json({
@@ -451,7 +530,7 @@ app.get("/api/search_and_sync", async (req, res) => {
     } else {
         return res.status(404).json({
             ok: false,
-            error: `La aplicación o paquete '${q}' no se encontró ni se pudo sincronizar.`,
+            error: `La aplicación o paquete '${q}' no se encontró ni se pudo sincronizar en ninguna fuente.`,
             details: errors,
         });
     }
@@ -459,7 +538,7 @@ app.get("/api/search_and_sync", async (req, res) => {
 
 
 /* ---------------------------------
-   2. ⭐️ ENDPOINT DE CATÁLOGO MASIVO (sync_popular_apps) (SIN CAMBIOS)
+   2. ⭐️ ENDPOINT DE CATÁLOGO MASIVO (SIN CAMBIOS)
 ------------------------------------*/
 app.post("/api/sync_popular_apps", (req, res) => {
     const result = syncPopularAppsInBackground();
@@ -565,7 +644,7 @@ app.post("/api/manual_add", async (req, res) => {
 });
 
 /* ---------------------------------
-   4. 🔍 ENDPOINTS DE LISTADO (list_apps, get_app_meta) (SIN CAMBIOS)
+   4. 🔍 ENDPOINTS DE LISTADO (SIN CAMBIOS)
 ------------------------------------*/
 
 app.get("/api/list_apps", async (req, res) => {
