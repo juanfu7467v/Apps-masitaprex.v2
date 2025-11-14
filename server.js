@@ -5,9 +5,7 @@ dotenv.config();
 import { Octokit } from "@octokit/rest";
 import axios from "axios";
 import FormData from "form-data"; 
-import gplay from "google-play-scraper"; // <-- NUEVA IMPORTACIÓN
-
-// fs, path, cheerio, puppeteer ya no se usan
+import gplay from "google-play-scraper"; 
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -115,44 +113,149 @@ async function createOrUpdateGithubFile(pathInRepo, contentBase64, message) {
 }
 
 // ---------------------------------------------------
-// FUNCIONES DE BÚSQUEDA Y METADATOS DE GOOGLE PLAY (NUEVAS)
+// FUNCIÓN CENTRAL DE SINCRONIZACIÓN DE APK (NUEVA FUNCIÓN REUTILIZABLE)
+// ---------------------------------------------------
+async function syncAndSaveApk(packageName, version, displayName, source, apkBuffer, metaExtra = {}) {
+    if (apkBuffer.length >= MAX_GITHUB_FILE_SIZE_MB * 1024 * 1024) {
+        throw new Error(`APK demasiado grande (>=${MAX_GITHUB_FILE_SIZE_MB}MB) para GitHub API.`);
+    }
+
+    // 1. Verificar con VirusTotal
+    const fileName = `${packageName}_v${version}.apk`;
+    const vtResult = await scanWithVirusTotal(apkBuffer, fileName);
+
+    if (vtResult.status === "completed" && vtResult.malicious > 0) {
+        throw new Error(`Subida bloqueada: VirusTotal encontró ${vtResult.malicious} detecciones maliciosas.`);
+    }
+
+    // 2. Guardar APK en GitHub
+    const base64Apk = apkBuffer.toString("base64");
+    const apkPath = `public/apps/${packageName}/apk_${version}.apk`;
+    await createOrUpdateGithubFile(apkPath, base64Apk, `Sincronizar APK: ${packageName} v${version} (${source})`);
+
+    // 3. Crear y guardar Metadatos
+    const meta = {
+        source,
+        packageName,
+        displayName: displayName || packageName, 
+        version,
+        iconUrl: metaExtra.iconUrl || null,
+        
+        // Contenido (Usamos Google Play meta si es posible, si no, fallbacks)
+        summary: metaExtra.summary || 'No summary available.',
+        description: metaExtra.description || 'No description available.',
+        screenshots: metaExtra.screenshots || [],
+        warnings: metaExtra.warnings || `APK sincronizado desde ${source}. Se recomienda precaución.`,
+        
+        // Campos técnicos:
+        size: apkBuffer.length,
+        addedAt: new Date().toISOString(),
+        apkPath,
+        virustotal: vtResult
+    };
+    const metaPath = `public/apps/${packageName}/meta_${version}.json`;
+    await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"), `Sincronizar Meta: ${packageName} v${version} (${source})`);
+
+    return { meta, message: "APK sincronizado.", source };
+}
+
+
+// ---------------------------------------------------
+// FUNCIONES DE BÚSQUEDA Y DESCARGA DE APK (TERCEROS)
 // ---------------------------------------------------
 
 /**
- * Busca un packageName en Google Play por el nombre de la app.
+ * Descarga y sincroniza APK desde APKCombo (Mejor opción).
  */
+async function syncFromApkCombo(packageName) {
+    const apiUrl = `https://apkcombo.com/es/apk-downloader/?q=${packageName}`;
+    
+    // NOTA: Esta API no oficial requiere simular la solicitud que haría el botón de descarga.
+    // Requiere una solicitud POST a un endpoint no documentado. Aquí usamos un placeholder
+    // ya que simular el scraping completo es complejo sin Puppeteer o Cheerio.
+    // En la práctica, se necesitaría un scraping más avanzado para obtener la URL final.
+
+    // **Simulamos la obtención de metadatos y un buffer de APK para mantener la estructura.**
+    // Si necesitas que esto funcione realmente, necesitarías implementar una solución
+    // de scraping robusta o usar una API que te proporcione el enlace directo.
+
+    const metadataUrl = `https://apkcombo.com/es/${packageName.split('.').join('/')}`;
+    
+    try {
+        const res = await axios.get(metadataUrl, {
+            headers: { 'User-Agent': AXIOS_USER_AGENT }
+        });
+        
+        // Esto es un placeholder de la metadata que obtendrías de la página.
+        const meta = {
+            displayName: packageName, // Reemplazar con nombre real de la app scrapeado
+            version: "LATEST", // Reemplazar con versión real scrapeada
+            iconUrl: null, // Reemplazar con URL de icono scrapeado
+            summary: `Metadatos de ${packageName} obtenidos de APKCombo (placeholder).`,
+            description: `Descarga de APK intentada desde APKCombo.`,
+            warnings: "ADVERTENCIA: Descarga de APK de fuente no oficial (APKCombo).",
+        };
+
+        // **AQUÍ IRÍA LA LÓGICA REAL DE DESCARGA DEL APK**
+        // Por la complejidad de simular el POST/redirección, solo lanzaremos un error.
+        throw new Error("La integración real con APKCombo requiere scraping avanzado. No se pudo obtener el APK.");
+        
+    } catch (e) {
+        throw new Error(`APKCombo falló: ${e.message}`);
+    }
+}
+
+/**
+ * Descarga y sincroniza APK desde APKPure (Fallback).
+ */
+async function syncFromApkPure(packageName) {
+    // La API de APKPure es tan inestable como la de APKCombo. 
+    // Usaremos el mismo enfoque de "scrapear metadata" y lanzar una excepción.
+    try {
+        const metadataUrl = `https://apkpure.com/es/${packageName.split('.').join('/')}`;
+        const res = await axios.get(metadataUrl, {
+            headers: { 'User-Agent': AXIOS_USER_AGENT }
+        });
+
+        // Placeholder para metadata
+        const meta = {
+            displayName: packageName,
+            version: "LATEST",
+            iconUrl: null,
+            summary: `Metadatos de ${packageName} obtenidos de APKPure (placeholder).`,
+            description: `Descarga de APK intentada desde APKPure.`,
+            warnings: "ADVERTENCIA: Descarga de APK de fuente no oficial (APKPure).",
+        };
+
+        // **AQUÍ IRÍA LA LÓGICA REAL DE DESCARGA DEL APK**
+        throw new Error("La integración real con APKPure requiere scraping avanzado. No se pudo obtener el APK.");
+
+    } catch (e) {
+        throw new Error(`APKPure falló: ${e.message}`);
+    }
+}
+
+
+// ---------------------------------------------------
+// FUNCIONES DE BÚSQUEDA Y METADATOS DE GOOGLE PLAY (SIN CAMBIOS)
+// ---------------------------------------------------
 async function searchGooglePlay(appName) {
     try {
         const results = await gplay.search({
             term: appName,
-            num: 5, // Obtener los 5 resultados principales
-            lang: 'es', 
-            country: 'us' // Búsqueda en idioma español/región US
+            num: 5, lang: 'es', country: 'us' 
         });
-
-        if (results && results.length > 0) {
-            // Devolver el packageName del primer resultado más relevante
-            return results[0].appId;
-        }
-        return null;
+        return (results && results.length > 0) ? results[0].appId : null;
     } catch (e) {
         console.error("Error en searchGooglePlay:", e.message);
         return null;
     }
 }
 
-/**
- * Obtiene metadatos completos de una app en Google Play.
- */
 async function getGooglePlayMeta(packageName) {
     try {
-        const appDetails = await gplay.app({
-            appId: packageName,
-            lang: 'es',
-            country: 'us'
-        });
-
-        // Formatear los metadatos al formato que se usa en tu sistema
+        const appDetails = await gplay.app({ appId: packageName, lang: 'es', country: 'us' });
+        
         const meta = {
             source: "google_play_scraper",
             packageName: appDetails.appId,
@@ -160,33 +263,28 @@ async function getGooglePlayMeta(packageName) {
             version: appDetails.version || 'unknown',
             iconUrl: appDetails.icon,
             
-            // Contenido
             summary: appDetails.summary,
-            description: appDetails.descriptionHTML, // Descripcion completa en HTML
+            description: appDetails.descriptionHTML,
             screenshots: appDetails.screenshots || [],
             warnings: "ADVERTENCIA: Solo se obtuvieron metadatos. El APK no se puede descargar desde Google Play Store con esta herramienta.",
             
-            // Campos técnicos:
-            size: 'N/A', // No disponible en scraper
+            size: 'N/A', 
             addedAt: new Date().toISOString(),
             apkPath: 'N/A (Solo metadatos)'
         };
         return { meta, message: "Metadatos obtenidos de Google Play Store." };
 
     } catch (e) {
-        console.error("Error en getGooglePlayMeta:", e.message);
         throw new Error(`No se pudieron obtener metadatos de Google Play para ${packageName}.`);
     }
 }
 
 
 // ---------------------------------------------------
-// FUNCIÓN DE BÚSQUEDA POR NOMBRE (F-DROID/IZZYONDROID)
+// FUNCIONES DE BÚSQUEDA Y SINCRONIZACIÓN (F-DROID/IZZYONDROID/GITHUB)
 // ---------------------------------------------------
-/**
- * Busca el PackageName de una aplicación basándose en su nombre visible en repos FOSS.
- * (SIN CAMBIOS)
- */
+// (Mantienen la lógica para descargar APKs)
+
 async function findPackageNameByAppName(appName, source) {
     const metaIndexUrl = source === 'fdroid' 
         ? `https://f-droid.org/repo/index.json`
@@ -211,20 +309,10 @@ async function findPackageNameByAppName(appName, source) {
     }
 }
 
-
-// ---------------------------------------------------
-// FUNCIONES CENTRALES DE SINCRONIZACIÓN (F-DROID/IZZYONDROID/GITHUB) (SIN CAMBIOS)
-// ---------------------------------------------------
-// (Mantienen la lógica para descargar APKs)
 async function syncFromRepo(packageName, source) {
-    // ... (El cuerpo de syncFromRepo es el mismo, omitido aquí por brevedad)
-    const apiUrl = source === 'fdroid' 
-        ? `https://f-droid.org/repo/index-v1.json`
-        : `https://apt.izzysoft.de/fdroid/repo/index-v1.json`;
-
+    const apiUrl = source === 'fdroid' ? `https://f-droid.org/repo/index-v1.json` : `https://apt.izzysoft.de/fdroid/repo/index-v1.json`;
     const repoBaseUrl = source === 'fdroid' ? 'https://f-droid.org/repo/' : 'https://apt.izzysoft.de/fdroid/repo/';
 
-    // 1. Obtener índice y metadatos básicos
     const indexResponse = await axios.get(apiUrl, { headers: { 'User-Agent': AXIOS_USER_AGENT } });
     const { packages } = indexResponse.data;
     const appData = packages[packageName];
@@ -240,93 +328,51 @@ async function syncFromRepo(packageName, source) {
     const apkFileName = latestMeta.apkName;
     const downloadUrl = repoBaseUrl + apkFileName;
 
-    // 2. OBTENER INFORMACIÓN EXTENDIDA (Descripción, Capturas, etc.)
-    const metaIndexUrl = source === 'fdroid' 
-        ? `https://f-droid.org/repo/index.json`
-        : `https://apt.izzysoft.de/fdroid/repo/index.json`;
-    
+    // Obtener Metadata Extendida para el registro
     let extendedMeta = {};
     try {
+        const metaIndexUrl = source === 'fdroid' ? `https://f-droid.org/repo/index.json` : `https://apt.izzysoft.de/fdroid/repo/index.json`;
         const metaIndexResponse = await axios.get(metaIndexUrl, { headers: { 'User-Agent': AXIOS_USER_AGENT } });
-        const appInfoList = metaIndexResponse.data.apps;
-        
-        const foundApp = appInfoList.find(app => app.packageName === packageName);
+        const foundApp = metaIndexResponse.data.apps.find(app => app.packageName === packageName);
 
         if (foundApp) {
             extendedMeta = {
                 summary: foundApp.localized?.['en-US']?.summary || foundApp.summary,
                 description: foundApp.localized?.['en-US']?.description || foundApp.description, 
-                screenshots: foundApp.localized?.['en-US']?.screenshots || foundApp.screenshots || [],
+                screenshots: (foundApp.localized?.['en-US']?.screenshots || foundApp.screenshots || []).map(fileName => repoBaseUrl + 'screenshots/' + fileName),
                 warnings: foundApp.localized?.['en-US']?.issue || foundApp.issue,
-                summary_es: foundApp.localized?.es?.summary,
-                description_es: foundApp.localized?.es?.description,
             };
-            extendedMeta.screenshots = extendedMeta.screenshots.map(fileName => {
-                return repoBaseUrl + 'screenshots/' + fileName;
-            });
         }
     } catch (e) {
         console.warn(`No se pudieron obtener metadatos extendidos para ${packageName} de ${source}.`);
     }
     
-    // 3. Descargar APK
-    const apkResp = await axios.get(downloadUrl, { 
-        responseType: "arraybuffer", 
-        headers: { 'User-Agent': AXIOS_USER_AGENT }
-    });
+    // Descargar APK
+    const apkResp = await axios.get(downloadUrl, { responseType: "arraybuffer", headers: { 'User-Agent': AXIOS_USER_AGENT } });
     const apkBuffer = Buffer.from(apkResp.data);
 
-    if (apkBuffer.length >= MAX_GITHUB_FILE_SIZE_MB * 1024 * 1024) {
-        throw new Error(`APK demasiado grande (>=${MAX_GITHUB_FILE_SIZE_MB}MB) para GitHub API.`);
-    }
-
-    // 4. Guardar APK en GitHub
-    const base64Apk = apkBuffer.toString("base64");
-    const apkPath = `public/apps/${packageName}/apk_${version}.apk`;
-    await createOrUpdateGithubFile(apkPath, base64Apk, `Sincronizar APK: ${packageName} v${version} (${source})`);
-
-    // 5. Crear y guardar Metadatos completos
-    const meta = {
-        source,
-        packageName,
-        displayName: latestMeta.localized || packageName, 
-        version,
+    const metaExtra = {
+        ...extendedMeta,
         iconUrl: latestMeta.icon ? repoBaseUrl + 'icons/' + latestMeta.icon : null,
-        
-        // Contenido
-        summary: extendedMeta.summary || extendedMeta.summary_es || 'No summary available.',
-        description: extendedMeta.description || extendedMeta.description_es || 'No description available in API meta.',
-        screenshots: extendedMeta.screenshots || [],
-        warnings: extendedMeta.warnings || null, 
-        
-        // Campos técnicos:
-        size: apkBuffer.length,
-        addedAt: new Date().toISOString(),
-        apkPath 
     };
-    const metaPath = `public/apps/${packageName}/meta_${version}.json`;
-    await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"), `Sincronizar Meta: ${packageName} v${version} (${source})`);
 
-    return { meta, message: "APK sincronizado.", source };
+    return syncAndSaveApk(packageName, version, latestMeta.localized || packageName, source, apkBuffer, metaExtra);
 }
 
 async function syncFromGitHubRelease(repo, packageName) {
-    // ... (El cuerpo de syncFromGitHubRelease es el mismo, omitido aquí por brevedad)
     const [owner, repoName] = repo.split("/");
     const pName = packageName || repoName;
     
     const release = await octokit.repos.getLatestRelease({ owner, repo: repoName });
     const version = release.data.tag_name || release.data.name || "unknown";
+    
     let assetUrl = null;
     let assetName = null;
-    
-    if (release.data.assets && release.data.assets.length) {
-        for (const a of release.data.assets) {
-            if (a.name.endsWith(".apk")) {
-                assetUrl = a.browser_download_url;
-                assetName = a.name;
-                break;
-            }
+    for (const a of release.data.assets) {
+        if (a.name.endsWith(".apk")) {
+            assetUrl = a.browser_download_url;
+            assetName = a.name;
+            break;
         }
     }
     
@@ -337,44 +383,20 @@ async function syncFromGitHubRelease(repo, packageName) {
     const apkResp = await axios.get(assetUrl, { responseType: "arraybuffer" });
     const apkBuffer = Buffer.from(apkResp.data);
 
-    if (apkBuffer.length >= MAX_GITHUB_FILE_SIZE_MB * 1024 * 1024) {
-        throw new Error(`APK demasiado grande (>=${MAX_GITHUB_FILE_SIZE_MB}MB) para GitHub API.`);
-    }
-
-    const base64Apk = apkBuffer.toString("base64");
-    const apkPath = `public/apps/${pName}/apk_${version}.apk`;
-    await createOrUpdateGithubFile(apkPath, base64Apk, `Add APK ${pName} ${version} (GitHub Release)`);
-
     const releaseBody = release.data.body || "";
-    const meta = {
-        source: "github_release",
-        owner,
-        repo: repoName,
-        packageName: pName,
-        version,
-        assetName,
-        
-        iconUrl: null, 
+    const metaExtra = {
         summary: releaseBody.split('\n')[0].substring(0, 100) + '...', 
         description: releaseBody,
-        screenshots: [], 
         warnings: "Esta es una descarga de GitHub Release. Se recomienda siempre verificar la fuente.",
-        
-        size: apkBuffer.length,
-        addedAt: new Date().toISOString(),
-        apkPath
     };
-    const metaPath = `public/apps/${pName}/meta_${version}.json`;
-    await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"), `Add meta ${pName} ${version}`);
 
-    return { meta, message: "APK sincronizado.", source: "github_release" };
+    return syncAndSaveApk(pName, version, pName, "github_release", apkBuffer, metaExtra);
 }
 
 
 // ---------------------------------------------------
 // FUNCIONES DE FONDO PARA EL CATÁLOGO MASIVO (SIN CAMBIOS)
 // ---------------------------------------------------
-// (Omitido por brevedad, no hay cambios)
 
 const POPULAR_APPS_FDROID = [
     { name: "NewPipe", package: "org.schabi.newpipe" },
@@ -439,7 +461,7 @@ function syncPopularAppsInBackground() {
 // ---------------------------------------------------
 
 /* ---------------------------------
-   1. 🔍 ENDPOINT DE BÚSQUEDA Y SINCRONIZACIÓN (MODIFICADO para Google Play)
+   1. 🔍 ENDPOINT DE BÚSQUEDA Y SINCRONIZACIÓN (LÓGICA ACTUALIZADA)
 ------------------------------------*/
 app.get("/api/search_and_sync", async (req, res) => {
     let { q } = req.query; 
@@ -452,68 +474,82 @@ app.get("/api/search_and_sync", async (req, res) => {
     const isPackageName = packageName.includes('.');
     const isRepo = packageName.includes('/');
     
-    // Si la consulta es un nombre de app (ej: "Facebook")
+    // 0. Si la consulta es un nombre de app (ej: "Facebook"), buscar el packageName en Google Play
+    // La búsqueda en FOSS ahora se hará por packageName
     if (!isPackageName && !isRepo) {
-        console.log(`Buscando PackageName para el nombre: ${q}`);
-        
-        // **A. Intentar buscar primero en FOSS (F-Droid/IzzyOnDroid)**
-        let foundPackage = await findPackageNameByAppName(q, 'fdroid');
-        let source = 'F-Droid';
-
-        if (!foundPackage) {
-            foundPackage = await findPackageNameByAppName(q, 'izzyondroid');
-            source = 'IzzyOnDroid';
-        }
-        
-        // **B. Si no se encuentra en FOSS, buscar en Google Play**
-        if (!foundPackage) {
-            const gpPackage = await searchGooglePlay(q);
-            if (gpPackage) {
-                 packageName = gpPackage;
-                 errors.push(`Encontrado: El nombre de app '${q}' corresponde al paquete: ${packageName} en Google Play.`);
-            } else {
-                 errors.push(`Advertencia: El nombre de app '${q}' no se pudo mapear a un packageName conocido en ninguna fuente.`);
-            }
+        console.log(`Buscando PackageName para el nombre: ${q} en Google Play.`);
+        const gpPackage = await searchGooglePlay(q);
+        if (gpPackage) {
+            packageName = gpPackage;
+            errors.push(`Encontrado: El nombre de app '${q}' corresponde al paquete: ${packageName}.`);
         } else {
-            packageName = foundPackage;
-            errors.push(`Encontrado: El nombre de app '${q}' corresponde al paquete: ${packageName} en ${source}.`);
+            errors.push(`Advertencia: El nombre de app '${q}' no se pudo mapear a un packageName conocido.`);
         }
     }
+    
+    // ** INICIO DE LA CASCADA DE DESCARGA DE APK **
 
-
-    // Intento 1: F-Droid (usando packageName) - Solo si el packageName encontrado NO es de Google Play
-    if (!appInfo && packageName && (isRepo || !packageName.startsWith('com.') || packageName.includes('fdroid') || packageName.includes('org.'))) {
-        try {
-            appInfo = await syncFromRepo(packageName, 'fdroid');
-        } catch (e) {
-            errors.push(`F-Droid falló: ${e.message.includes('Paquete') ? e.message : 'Error de API/descarga.'}`);
-        }
-    }
-
-    // Intento 2: IzzyOnDroid (usando packageName)
-    if (!appInfo) {
-        try {
-            appInfo = await syncFromRepo(packageName, 'izzyondroid');
-        } catch (e) {
-            errors.push(`IzzyOnDroid falló: ${e.message.includes('Paquete') ? e.message : 'Error de API/descarga.'}`);
-        }
-    }
-
-    // Intento 3: GitHub Releases (asumiendo que q es el formato owner/repo)
+    // 1. Intento: GitHub Releases (si la consulta es un repo o un paquete conocido de GitHub)
     if (!appInfo && packageName.includes('/')) {
         try {
             appInfo = await syncFromGitHubRelease(packageName);
+            errors.push(`Éxito: APK sincronizado desde GitHub Releases.`);
         } catch (e) {
             errors.push(`GitHub Releases falló: ${e.message.includes('No se encontró') ? e.message : 'Error de API/descarga.'}`);
         }
     }
+
+    // 2. Intento: F-Droid (usando packageName)
+    if (!appInfo && packageName && packageName.includes('.')) {
+        try {
+            appInfo = await syncFromRepo(packageName, 'fdroid');
+            errors.push(`Éxito: APK sincronizado desde F-Droid.`);
+        } catch (e) {
+            errors.push(`F-Droid falló: ${e.message.includes('Paquete') ? e.message : e.message}`);
+        }
+    }
+
+    // 3. Intento: IzzyOnDroid (usando packageName)
+    if (!appInfo && packageName && packageName.includes('.')) {
+        try {
+            appInfo = await syncFromRepo(packageName, 'izzyondroid');
+            errors.push(`Éxito: APK sincronizado desde IzzyOnDroid.`);
+        } catch (e) {
+            errors.push(`IzzyOnDroid falló: ${e.message.includes('Paquete') ? e.message : e.message}`);
+        }
+    }
     
-    // Intento 4: Metadatos de Google Play (Si el paquete no fue sincronizado, intentar obtener solo metadatos si parece un paquete comercial)
-    if (!appInfo && packageName.includes('.')) {
+    // 4. Intento: APKCombo API (Fallback comercial 1 - APK)
+    if (!appInfo && packageName && packageName.includes('.')) {
+        try {
+            // NOTA: Esta función es un placeholder.
+            // Para una aplicación real, tendrías que simular la descarga aquí
+            appInfo = await syncFromApkCombo(packageName); 
+            errors.push(`Éxito: APK sincronizado desde APKCombo (Nota: Verifique la implementación de la descarga).`);
+        } catch (e) {
+            errors.push(`APKCombo falló: ${e.message}`);
+        }
+    }
+    
+    // 5. Intento: APKPure API (Fallback comercial 2 - APK)
+    if (!appInfo && packageName && packageName.includes('.')) {
+        try {
+            // NOTA: Esta función es un placeholder.
+            appInfo = await syncFromApkPure(packageName);
+            errors.push(`Éxito: APK sincronizado desde APKPure (Nota: Verifique la implementación de la descarga).`);
+        } catch (e) {
+            errors.push(`APKPure falló: ${e.message}`);
+        }
+    }
+    
+    // ** FIN DE LA CASCADA DE DESCARGA DE APK **
+
+    // 6. Intento Final: Metadatos de Google Play (si no se sincronizó nada)
+    if (!appInfo && packageName && packageName.includes('.')) {
         try {
             const metaResult = await getGooglePlayMeta(packageName);
             appInfo = { meta: metaResult.meta, source: "Google Play Metadata Only" };
-            errors.push("ADVERTENCIA: Se obtuvieron metadatos de Google Play. La descarga del APK NO está disponible.");
+            errors.push("ADVERTENCIA: Se obtuvieron metadatos de Google Play. La descarga del APK NO está disponible desde esta fuente.");
         } catch (e) {
             errors.push(`Google Play Metadatos falló: ${e.message}`);
         }
@@ -523,7 +559,7 @@ app.get("/api/search_and_sync", async (req, res) => {
     if (appInfo) {
         return res.json({
             ok: true,
-            status: `Éxito: Sincronizado desde ${appInfo.source}`,
+            status: `Éxito: Proceso completado desde ${appInfo.source}`,
             meta: appInfo.meta,
             errors: errors.length ? errors : undefined,
         });
@@ -597,45 +633,18 @@ app.post("/api/manual_add", async (req, res) => {
         
         const apkResp = await axios.get(url, { responseType: "arraybuffer", headers: { 'User-Agent': AXIOS_USER_AGENT } });
         const apkBuffer = Buffer.from(apkResp.data);
-        
-        if (apkBuffer.length >= MAX_GITHUB_FILE_SIZE_MB * 1024 * 1024) {
-            return res.json({ ok: false, error: `APK demasiado grande (>=${MAX_GITHUB_FILE_SIZE_MB}MB) para GitHub API.` });
-        }
-        
-        const fileName = `${packageName}_v${version}.apk`;
-        const vtResult = await scanWithVirusTotal(apkBuffer, fileName);
-        
-        if (vtResult.status === "completed" && vtResult.malicious > 0) {
-             return res.status(403).json({ 
-                ok: false, 
-                error: `Subida bloqueada: El análisis de VirusTotal encontró ${vtResult.malicious} detecciones maliciosas.`,
-                details: vtResult 
-            });
-        }
-        
-        const base64Apk = apkBuffer.toString("base64");
-        const apkPath = `public/apps/${packageName}/apk_${version}.apk`;
-        await createOrUpdateGithubFile(apkPath, base64Apk, `Add manual APK ${packageName} ${version}`);
-        
-        const meta = { 
-            source: "manual", 
-            url, 
-            packageName, 
-            displayName: displayName || packageName, 
-            version,
-            size: apkBuffer.length, 
-            addedAt: new Date().toISOString(), 
-            apkPath,
-            virustotal: vtResult 
+
+        const metaExtra = {
+            url,
+            warnings: "APK agregado manualmente. Se recomienda precaución."
         };
-        const metaPath = `public/apps/${packageName}/meta_${version}.json`;
-        await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"), `Add meta ${packageName} ${version}`);
+        
+        const result = await syncAndSaveApk(packageName, version, displayName, "manual", apkBuffer, metaExtra);
         
         return res.json({ 
             ok: true, 
-            meta, 
-            message: "APK agregado manualmente y verificado.", 
-            virustotal: vtResult 
+            ...result,
+            virustotal: result.meta.virustotal 
         });
     } catch (e) {
         console.error(e);
