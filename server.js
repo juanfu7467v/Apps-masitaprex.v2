@@ -14,22 +14,35 @@ app.use(express.json({ limit: "10mb" }));
 const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
 const G_OWNER = process.env.GITHUB_OWNER;
 const G_REPO = process.env.GITHUB_REPO;
+const BASE_URL = process.env.BASE_URL; // <--- NUEVA CONSTANTE
 const MAX_GITHUB_FILE_SIZE_MB = 100;
 const VIRUSTOTAL_API_KEY = process.env.VIRUSTOTAL_API_KEY; 
-// Usar el User-Agent estándar para evitar bloqueos
 const AXIOS_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
+
+// ----------------------------------------------------
+// NUEVA FUNCIÓN HELPER: Generar URL de Descarga
+// ----------------------------------------------------
+function generateDownloadUrl(apkPath) {
+    if (!BASE_URL || apkPath.startsWith('N/A')) {
+        return "URL_NO_DISPONIBLE (Falta BASE_URL o APK no sincronizado)";
+    }
+    // Asegurarse de que la ruta sea correcta. Reemplazar 'public/' que es la ruta interna
+    // con la ruta base pública.
+    const cleanPath = apkPath.replace(/^public\//, '');
+    
+    // Devolver la URL completa
+    return `${BASE_URL.replace(/\/$/, '')}/${cleanPath}`;
+}
+
 
 // ----------------------------------------------------
 // FUNCIÓN HELPER: Verificación con VirusTotal (SIN CAMBIOS)
 // ----------------------------------------------------
-/**
- * Envía un archivo a VirusTotal para escanear y espera el resultado.
- */
 async function scanWithVirusTotal(apkBuffer, fileName) {
     if (!VIRUSTOTAL_API_KEY) {
         return { message: "Clave de VirusTotal no configurada. Saltando el escaneo.", status: "skipped" };
     }
-
+    // ... (rest of the VirusTotal logic remains the same)
     const form = new FormData();
     form.append('file', apkBuffer, {
         filename: fileName,
@@ -37,7 +50,6 @@ async function scanWithVirusTotal(apkBuffer, fileName) {
     });
 
     try {
-        // 1. Subir el archivo y obtener el ID de análisis
         const uploadResponse = await axios.post('https://www.virustotal.com/api/v3/files', form, {
             headers: {
                 ...form.getHeaders(),
@@ -48,11 +60,10 @@ async function scanWithVirusTotal(apkBuffer, fileName) {
         
         const analysisId = uploadResponse.data.data.id;
         
-        // 2. Esperar el resultado del análisis (poll)
         let checks = 0;
         
-        while (checks < 10) { // Máximo 10 intentos (aprox. 50 segundos)
-            await new Promise(resolve => setTimeout(resolve, 5000)); // Esperar 5 segundos
+        while (checks < 10) { 
+            await new Promise(resolve => setTimeout(resolve, 5000)); 
             
             const analysisResponse = await axios.get(`https://www.virustotal.com/api/v3/analyses/${analysisId}`, {
                 headers: { 'x-apikey': VIRUSTOTAL_API_KEY }
@@ -157,42 +168,27 @@ async function syncAndSaveApk(packageName, version, displayName, source, apkBuff
     const metaPath = `public/apps/${packageName}/meta_${version}.json`;
     await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"), `Sincronizar Meta: ${packageName} v${version} (${source})`);
 
-    return { meta, message: "APK sincronizado.", source };
+    return { meta, message: "APK sincronizado.", source, downloadUrl: generateDownloadUrl(apkPath) }; // <-- Retornar URL aquí
 }
 
 
 // ---------------------------------------------------
-// NUEVA FUNCIÓN DE DESCARGA DE APK POR PROXY
+// NUEVA FUNCIÓN DE DESCARGA DE APK POR PROXY (SIN CAMBIOS)
 // ---------------------------------------------------
-
-/**
- * Intenta descargar el APK usando un servicio de proxy de descarga (ej. basándose en apk-dl.com).
- * Requiere obtener metadatos de Google Play primero.
- */
 async function downloadApkFromProxy(packageName, appDetails) {
     if (!appDetails || !appDetails.appId) {
         throw new Error("Se requiere metadatos válidos de Google Play.");
     }
     
-    // 1. Determinar el mejor endpoint de descarga conocido (simulación de servicio proxy)
-    // El endpoint de descarga suele ser:
-    // https://apk-dl.com/details?id={packageName}&version={latestVersion}
-    // y luego necesitas raspar la página para encontrar el enlace directo al APK.
-    
-    // Para simplificar y enfocarnos en el error 403, vamos a generar una URL conocida
-    // de un servicio proxy popular y DEBE usar el User-Agent
     const downloadUrl = `https://d.apk-dl.com/details?id=${packageName}`; 
     
-    // 2. Intentar obtener el APK
     let apkResp;
     try {
-        // La clave para evitar el 403 es imitar un navegador y obtener la respuesta en buffer
         apkResp = await axios.get(downloadUrl, { 
             responseType: "arraybuffer", 
             headers: { 'User-Agent': AXIOS_USER_AGENT } 
         });
     } catch (e) {
-        // Si la URL principal falla, intentar una alternativa (a veces usan un prefijo diferente)
         const altDownloadUrl = `https://m.apk-dl.com/details?id=${packageName}`;
         apkResp = await axios.get(altDownloadUrl, { 
             responseType: "arraybuffer", 
@@ -202,11 +198,9 @@ async function downloadApkFromProxy(packageName, appDetails) {
 
     const apkBuffer = Buffer.from(apkResp.data);
 
-    // 3. Obtener versión y nombre de los metadatos de Google Play
     const version = appDetails.version || 'unknown';
     const displayName = appDetails.title || packageName;
 
-    // 4. Preparar metadatos extendidos
     const metaExtra = {
         iconUrl: appDetails.icon,
         summary: appDetails.summary,
@@ -215,13 +209,12 @@ async function downloadApkFromProxy(packageName, appDetails) {
         warnings: "ADVERTENCIA: Descarga de APK de fuente Proxy/Terceros. ¡Verifique VirusTotal!"
     };
 
-    // 5. Sincronizar y guardar
     return syncAndSaveApk(packageName, version, displayName, "apk_proxy_dl", apkBuffer, metaExtra);
 }
 
 
 // ---------------------------------------------------
-// FUNCIONES DE BÚSQUEDA Y METADATOS DE GOOGLE PLAY (MODIFICADAS)
+// FUNCIONES DE BÚSQUEDA Y METADATOS DE GOOGLE PLAY (SIN CAMBIOS)
 // ---------------------------------------------------
 async function searchGooglePlay(appName) {
     try {
@@ -233,10 +226,6 @@ async function searchGooglePlay(appName) {
     }
 }
 
-/**
- * Obtiene metadatos completos de una app en Google Play.
- * Retorna los detalles COMPLETOS (gplay.app result) para usar en el proxy.
- */
 async function getGooglePlayDetails(packageName) {
     try {
         const appDetails = await gplay.app({ appId: packageName, lang: 'es', country: 'us' });
@@ -246,11 +235,8 @@ async function getGooglePlayDetails(packageName) {
     }
 }
 
-/**
- * Formatea los detalles para el resultado final de solo metadatos.
- */
 function formatGooglePlayMeta(appDetails) {
-    return {
+    const meta = {
         source: "google_play_scraper",
         packageName: appDetails.appId,
         displayName: appDetails.title,
@@ -264,6 +250,7 @@ function formatGooglePlayMeta(appDetails) {
         addedAt: new Date().toISOString(),
         apkPath: 'N/A (Solo metadatos)'
     };
+    return meta;
 }
 
 
@@ -292,7 +279,6 @@ async function findPackageNameByAppName(appName, source) {
 }
 
 async function syncFromRepo(packageName, source) {
-    // ... (Lógica de F-Droid/IzzyOnDroid para obtener APK y metadatos)
     const apiUrl = source === 'fdroid' ? `https://f-droid.org/repo/index-v1.json` : `https://apt.izzysoft.de/fdroid/repo/index-v1.json`;
     const repoBaseUrl = source === 'fdroid' ? 'https://f-droid.org/repo/' : 'https://apt.izzysoft.de/fdroid/repo/';
 
@@ -341,7 +327,6 @@ async function syncFromRepo(packageName, source) {
 }
 
 async function syncFromGitHubRelease(repo, packageName) {
-    // ... (Lógica de GitHub Release para obtener APK y metadatos)
     const [owner, repoName] = repo.split("/");
     const pName = packageName || repoName;
     
@@ -375,7 +360,7 @@ async function syncFromGitHubRelease(repo, packageName) {
     return syncAndSaveApk(pName, version, pName, "github_release", apkBuffer, metaExtra);
 }
 
-// ... (El resto de las funciones: syncPopularAppsInBackground, /api/sync_*, /api/list_apps, etc. no han sido modificadas) ...
+// ... (Popular Apps and Background Sync remain the same) ...
 
 const POPULAR_APPS_FDROID = [
     { name: "NewPipe", package: "org.schabi.newpipe" },
@@ -440,7 +425,7 @@ function syncPopularAppsInBackground() {
 // ---------------------------------------------------
 
 /* ---------------------------------
-   1. 🔍 ENDPOINT DE BÚSQUEDA Y SINCRONIZACIÓN (LÓGICA ACTUALIZADA)
+   1. 🔍 ENDPOINT DE BÚSQUEDA Y SINCRONIZACIÓN (MODIFICADO para devolver URL)
 ------------------------------------*/
 app.get("/api/search_and_sync", async (req, res) => {
     let { q } = req.query; 
@@ -449,7 +434,7 @@ app.get("/api/search_and_sync", async (req, res) => {
     let appInfo = null;
     let errors = [];
     let packageName = q; 
-    let gpDetails = null; // Almacena los detalles de Google Play si se encuentran
+    let gpDetails = null;
 
     const isPackageName = packageName.includes('.');
     const isRepo = packageName.includes('/');
@@ -466,7 +451,7 @@ app.get("/api/search_and_sync", async (req, res) => {
         }
     }
     
-    // 0.5 Obtener detalles de Google Play si tenemos el packageName (necesario para el proxy)
+    // 0.5 Obtener detalles de Google Play si tenemos el packageName
     if (packageName && packageName.includes('.')) {
         try {
             gpDetails = await getGooglePlayDetails(packageName);
@@ -508,7 +493,7 @@ app.get("/api/search_and_sync", async (req, res) => {
         }
     }
     
-    // 4. Intento: Proxy de descarga de APK (Nuevo Fallback Comercial)
+    // 4. Intento: Proxy de descarga de APK
     if (!appInfo && gpDetails) {
         try {
             appInfo = await downloadApkFromProxy(packageName, gpDetails); 
@@ -529,9 +514,11 @@ app.get("/api/search_and_sync", async (req, res) => {
 
 
     if (appInfo) {
+        // RESPUESTA MODIFICADA PARA INCLUIR EL LINK DE DESCARGA
         return res.json({
             ok: true,
             status: `Éxito: Proceso completado desde ${appInfo.source}`,
+            downloadUrl: appInfo.downloadUrl || 'N/A (Solo metadatos)', // <-- NUEVO CAMPO
             meta: appInfo.meta,
             errors: errors.length ? errors : undefined,
         });
