@@ -65,14 +65,16 @@ async function searchAppAndScrapeInfo(query) {
         const $ = cheerio.load(response.data);
         
         // 1. Encontrar el primer resultado de la búsqueda
-        const firstResultCard = $('.appRow').first();
+        // Selector actualizado para capturar el primer resultado de la tabla.
+        const firstResultCard = $('.apkm-table-row').first(); 
         if (firstResultCard.length === 0) {
             return null; // No se encontraron resultados
         }
         
         // 2. Extraer el enlace a la página de la aplicación
-        const appPageLink = firstResultCard.find('.appInfo .fontBlack').attr('href');
+        const appPageLink = firstResultCard.find('.appRow > div:nth-child(2) > a').attr('href');
         if (!appPageLink) {
+             console.log("No se encontró appPageLink en el resultado de búsqueda.");
              return null;
         }
         const appPageUrl = `https://www.apkmirror.com${appPageLink}`;
@@ -84,23 +86,35 @@ async function searchAppAndScrapeInfo(query) {
         const $$ = cheerio.load(appResponse.data);
 
         // 4. Extraer Metadatos
-        const packageName = appPageLink.split('/').slice(-2, -1)[0]; // Ejemplo: /app/facebook/ -> facebook
+        // El packageName se extrae de la URL de la página de la app (appPageLink)
+        const packageNameMatch = appPageLink.match(/\/app\/([^/]+)\/$/);
+        const packageName = packageNameMatch ? packageNameMatch[1] : 'unknown.package.name';
+        
         const displayName = $$('.app-name').text().trim() || 'Nombre Desconocido';
         
-        // La versión más reciente está en la tabla de releases
-        const latestRelease = $$('#primary_details > div.app_versions').first();
-        const version = latestRelease.find('.appInfo > .fontBlack').text().trim().match(/Version:\s*([\d.]+)/)?.[1] || '0.0';
+        // Buscar la versión en el primer app-name-link de la página de releases
+        const latestReleaseLink = $$('#primary_details .app_versions .appRow:first-child .app-name-link').attr('href');
         
-        // Extraer Descripción (A veces no disponible o requiere más scraping)
-        // Por simplicidad, tomaremos la primera descripción o un placeholder.
-        const description = $$('.details-section__description').text().trim() || 'No se encontró descripción.';
-
-        // Extraer Ícono
+        let version = '0.0';
+        if (latestReleaseLink) {
+            // El formato es típicamente: /apk/facebook/facebook-lite/facebook-lite-324-0-0-2-120-release/
+            const parts = latestReleaseLink.split('/');
+            // Buscamos un segmento que contenga números de versión
+            for (const part of parts.reverse()) {
+                const versionMatch = part.match(/(\d+\.\d+\.\d+(\.\d+)*)/);
+                if (versionMatch) {
+                    version = versionMatch[1];
+                    break;
+                }
+            }
+        }
+        
+        // Extracción de metadatos más robusta (si es posible)
+        const description = $$('.details-section__description').text().trim().substring(0, 500) + '...' || 'No se encontró descripción.';
         const iconUrl = $$('.app-icon').attr('src') || '';
 
-        // Extraer URL de Descarga (Esta es la parte más compleja y requiere ir a la página de descarga)
-        // APKMirror usa enlaces de redirección complejos. Usaremos el primer enlace de descarga:
-        const downloadPageLink = $$('.downloadButton').first().attr('href');
+        // Extraer URL de Descarga - Usamos el enlace de la *primera* versión listada
+        const downloadPageLink = $$('#primary_details .app_versions .downloadButton').first().attr('href');
         
         if (!downloadPageLink) {
              console.log("No se encontró enlace a la página de descarga.");
@@ -108,14 +122,6 @@ async function searchAppAndScrapeInfo(query) {
         }
         
         const downloadPageUrl = `https://www.apkmirror.com${downloadPageLink}`;
-        
-        // ¡ADVERTENCIA! Scrapear el enlace final de descarga requiere otra petición HTTP
-        // y puede romperse fácilmente si APKMirror cambia su HTML.
-        // Aquí simplificaremos: solo devolvemos la URL de la página de descarga. 
-        // El cliente (quien llama al API) podría necesitar ir a esa página para obtener la APK,
-        // o, si la arquitectura lo permite, necesitamos un scraper más profundo.
-        
-        // Ya que el objetivo es la sincronización, intentaremos el scraping profundo para obtener la URL final de la APK.
         
         const finalDownloadLink = await scrapeFinalDownloadLink(downloadPageUrl);
         
@@ -130,7 +136,7 @@ async function searchAppAndScrapeInfo(query) {
             version,
             description,
             iconUrl: iconUrl.startsWith('//') ? 'https:' + iconUrl : iconUrl,
-            screenshots: [], // APKMirror no lista capturas fácilmente, lo dejamos vacío
+            screenshots: [], 
             downloadUrl: finalDownloadLink, 
             source: "apkmirror"
         };
@@ -149,9 +155,7 @@ async function scrapeFinalDownloadLink(downloadPageUrl) {
         });
         const $$$ = cheerio.load(downloadResponse.data);
         
-        // Buscar el botón final de descarga que contenga el atributo 'data-url' o similar
-        // APKMirror usa botones de descarga que redirigen al archivo final.
-        // Buscamos la tabla con el botón de descarga real
+        // Selector ajustado: el botón final de descarga
         const finalDownloadButton = $$$('.accent_bg > a[rel="nofollow"]').first();
         
         if (finalDownloadButton.length > 0) {
@@ -160,6 +164,13 @@ async function scrapeFinalDownloadLink(downloadPageUrl) {
                 // Este es el enlace final que dispara la descarga.
                 return `https://www.apkmirror.com${finalLink}`;
             }
+        }
+        
+        // Si no se encuentra el enlace directo, a veces está en la página principal del download.
+        // Intentamos un selector más amplio si el primero falla
+        const fallbackLink = $$$('a[rel="nofollow"][href*="/download.php"]').attr('href');
+        if (fallbackLink) {
+            return `https://www.apkmirror.com${fallbackLink}`;
         }
         
         return null; 
@@ -171,7 +182,7 @@ async function scrapeFinalDownloadLink(downloadPageUrl) {
 
 
 /* ---------------------------------
-   ENDPOINT 1: Buscar Aplicación (REAL)
+   ENDPOINT 1: Buscar Aplicación
    Uso: GET /api/search_app?q=facebook
 ------------------------------------*/
 app.get("/api/search_app", async (req, res) => {
@@ -199,7 +210,7 @@ app.get("/api/search_app", async (req, res) => {
 });
 
 /* ---------------------------------
-   ENDPOINT 2: Iniciar Sincronización Automática (REAL)
+   ENDPOINT 2: Iniciar Sincronización Automática
    Uso: POST /api/sync_app_by_search 
    Body: { query: "facebook" }
 ------------------------------------*/
@@ -262,6 +273,93 @@ app.post("/api/sync_app_by_search", async (req, res) => {
         console.error("Error en sync_app_by_search:", e);
         return res.status(500).json({ ok: false, error: `Error durante la sincronización: ${e.message}` });
     }
+});
+
+/* ---------------------------------
+   ENDPOINT 3: Sincronización Masiva de Apps Populares
+   Uso: POST /api/sync_popular_apps 
+------------------------------------*/
+const POPULAR_APPS = [
+    "facebook",
+    "whatsapp",
+    "instagram",
+    "telegram",
+    "spotify"
+    // Puedes añadir más nombres de apps aquí
+];
+
+app.post("/api/sync_popular_apps", async (req, res) => {
+    let results = [];
+    let successCount = 0;
+    
+    // Función de ayuda para la sincronización basada en query (reutilizada de sync_app_by_search)
+    const syncSingleApp = async (query) => {
+        try {
+            const appInfo = await searchAppAndScrapeInfo(query);
+            
+            if (!appInfo || !appInfo.downloadUrl) {
+                return { query, ok: false, message: "No se encontraron datos o URL de descarga." };
+            }
+
+            const { packageName, version, downloadUrl, displayName } = appInfo;
+
+            const apkResp = await axios.get(downloadUrl, { 
+                responseType: "arraybuffer",
+                headers: { 'User-Agent': USER_AGENT }
+            });
+            const apkBuffer = Buffer.from(apkResp.data);
+
+            if (apkBuffer.length >= MAX_GITHUB_FILE_SIZE_MB * 1024 * 1024) {
+                return { query, ok: false, message: `APK demasiado grande (>=${MAX_GITHUB_FILE_SIZE_MB}MB).` };
+            }
+
+            // 4. Guardar APK y Metadatos en GitHub
+            const base64Apk = apkBuffer.toString("base64");
+            const apkPath = `public/apps/${packageName}/apk_${version}.apk`;
+            
+            // Creamos un objeto meta con todos los datos necesarios
+            const meta = {
+                source: appInfo.source,
+                packageName,
+                displayName,
+                version,
+                size: apkBuffer.length,
+                addedAt: new Date().toISOString(),
+                apkPath,
+                description: appInfo.description,
+                iconUrl: appInfo.iconUrl,
+                screenshots: appInfo.screenshots
+            };
+            
+            // Subir APK
+            await createOrUpdateGithubFile(apkPath, base64Apk, `Sincronizar APK Masiva: ${displayName} v${version}`);
+            
+            // Subir Metadatos
+            const metaPath = `public/apps/${packageName}/meta_${version}.json`;
+            await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"), `Sincronizar Meta Masiva: ${displayName} v${version}`);
+
+            successCount++;
+            return { query, ok: true, version, packageName, message: "Sincronizado correctamente." };
+
+        } catch (e) {
+            console.error(`Error al sincronizar ${query}:`, e.message);
+            return { query, ok: false, message: `Error desconocido: ${e.message}` };
+        }
+    };
+
+    // Procesar todas las aplicaciones populares en serie para evitar problemas de concurrencia/rate limit
+    for (const appQuery of POPULAR_APPS) {
+        const result = await syncSingleApp(appQuery);
+        results.push(result);
+    }
+
+    return res.json({ 
+        ok: true, 
+        totalProcessed: POPULAR_APPS.length,
+        totalSuccess: successCount,
+        results,
+        message: "Proceso de sincronización masiva finalizado."
+    });
 });
 
 
