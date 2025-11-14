@@ -1,6 +1,20 @@
 # Usa una imagen base oficial de Node.js (estable y ligera)
 FROM node:20-alpine
 
+# Instalar dependencias de Chromium para Puppeteer en Alpine
+# Fuente: https://pptr.dev/troubleshooting#running-puppeteer-on-alpine
+RUN apk add --no-cache \
+    chromium \
+    nss \
+    freetype \
+    harfbuzz \
+    ca-certificates \
+    ttf-freefont \
+    ghostscript
+
+# Establecer variable de entorno para que Puppeteer sepa dónde encontrar Chromium
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+
 # Crea y establece el directorio de trabajo dentro del contenedor
 WORKDIR /app
 
