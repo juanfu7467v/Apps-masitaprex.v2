@@ -19,13 +19,16 @@ const VIRUSTOTAL_API_KEY = process.env.VIRUSTOTAL_API_KEY;
 const AXIOS_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
 // ----------------------------------------------------
-// FUNCIÓN HELPER: Verificación con VirusTotal (SIN CAMBIOS)
+// FUNCIÓN HELPER: Verificación con VirusTotal (CORREGIDA)
 // ----------------------------------------------------
+/**
+ * Envía un archivo a VirusTotal para escanear y espera el resultado.
+ */
 async function scanWithVirusTotal(apkBuffer, fileName) {
     if (!VIRUSTOTAL_API_KEY) {
         return { message: "Clave de VirusTotal no configurada. Saltando el escaneo.", status: "skipped" };
     }
-    // ... (El código de VirusTotal se mantiene igual)
+
     const form = new FormData();
     form.append('file', apkBuffer, {
         filename: fileName,
@@ -37,7 +40,8 @@ async function scanWithVirusTotal(apkBuffer, fileName) {
         const uploadResponse = await axios.post('https://www.virustotal.com/api/v3/files', form, {
             headers: {
                 ...form.getHeaders(),
-                'x-apikey': VIRUSTOTAL_API:KEY,
+                // ¡AQUÍ ESTABA EL ERROR! CORREGIDO A VIRUSTOTAL_API_KEY
+                'x-apikey': VIRUSTOTAL_API_KEY, 
             },
             maxBodyLength: Infinity,
         });
@@ -110,14 +114,12 @@ async function createOrUpdateGithubFile(pathInRepo, contentBase64, message) {
 }
 
 // ---------------------------------------------------
-// FUNCIONES CENTRALES DE SINCRONIZACIÓN (MEJORADAS)
+// FUNCIONES CENTRALES DE SINCRONIZACIÓN (MEJORADAS PARA METADATOS)
 // ---------------------------------------------------
 
 /**
  * Función para obtener metadatos y APK de F-Droid o IzzyOnDroid.
  * Se ha mejorado para obtener más metadatos disponibles.
- * @param {string} packageName - Nombre del paquete de la aplicación.
- * @param {string} source - 'fdroid' o 'izzyondroid'.
  */
 async function syncFromRepo(packageName, source) {
     const apiUrl = source === 'fdroid' 
@@ -143,8 +145,6 @@ async function syncFromRepo(packageName, source) {
     const downloadUrl = repoBaseUrl + apkFileName;
 
     // 2. OBTENER INFORMACIÓN EXTENDIDA (Descripción, Capturas, etc.)
-    // La información detallada (descripción larga, capturas) está en el archivo YAML/JSON principal de la app
-    // Necesitamos el URL de los metadatos completos, que es un archivo JSON o YAML separado.
     const metaIndexUrl = source === 'fdroid' 
         ? `https://f-droid.org/repo/index.json`
         : `https://apt.izzysoft.de/fdroid/repo/index.json`;
@@ -154,26 +154,26 @@ async function syncFromRepo(packageName, source) {
         const metaIndexResponse = await axios.get(metaIndexUrl, { headers: { 'User-Agent': AXIOS_USER_AGENT } });
         const appInfoList = metaIndexResponse.data.apps;
         
-        // Buscar la app en el índice principal por package name
         const foundApp = appInfoList.find(app => app.packageName === packageName);
 
         if (foundApp) {
             extendedMeta = {
-                summary: foundApp.localized?.en_US?.summary || foundApp.summary, // Descripción corta
-                description: foundApp.localized?.en_US?.description || foundApp.description, // Descripción larga
-                screenshots: foundApp.localized?.en_US?.screenshots || foundApp.screenshots || [], // Capturas de pantalla
-                changelogs: foundApp.localized?.en_US?.changelogs || foundApp.changelogs,
-                warnings: foundApp.localized?.en_US?.issue || foundApp.issue, // Aclaraciones/Advertencias
+                summary: foundApp.localized?.['en-US']?.summary || foundApp.summary, // Usar 'en-US' o 'es' si está disponible
+                description: foundApp.localized?.['en-US']?.description || foundApp.description, 
+                screenshots: foundApp.localized?.['en-US']?.screenshots || foundApp.screenshots || [],
+                warnings: foundApp.localized?.['en-US']?.issue || foundApp.issue,
+                // También buscamos en español por si acaso
+                summary_es: foundApp.localized?.es?.summary,
+                description_es: foundApp.localized?.es?.description,
+                
             };
             // Las capturas de F-Droid son solo nombres de archivo, hay que construir el URL.
             extendedMeta.screenshots = extendedMeta.screenshots.map(fileName => {
-                // El path de las capturas es relativo a /repo/
                 return repoBaseUrl + 'screenshots/' + fileName;
             });
         }
     } catch (e) {
         console.warn(`No se pudieron obtener metadatos extendidos para ${packageName} de ${source}.`);
-        // Simplemente ignoramos el error y continuamos con los datos básicos
     }
     
     // 3. Descargar APK
@@ -198,10 +198,11 @@ async function syncFromRepo(packageName, source) {
         packageName,
         displayName: latestMeta.localized || packageName, 
         version,
-        // Campos detallados solicitados:
-        iconUrl: repoBaseUrl + 'icons/' + latestMeta.icon, // URL completa del icono
-        summary: extendedMeta.summary || 'No summary available.',
-        description: extendedMeta.description || 'No description available in API meta.',
+        iconUrl: latestMeta.icon ? repoBaseUrl + 'icons/' + latestMeta.icon : null, // URL completa del icono
+        
+        // Contenido
+        summary: extendedMeta.summary || extendedMeta.summary_es || 'No summary available.',
+        description: extendedMeta.description || extendedMeta.description_es || 'No description available in API meta.',
         screenshots: extendedMeta.screenshots || [],
         warnings: extendedMeta.warnings || null, // Aclaraciones sobre seguridad/issues
         
@@ -217,9 +218,7 @@ async function syncFromRepo(packageName, source) {
 }
 
 /**
- * Función para obtener metadatos y APK de GitHub Releases. (SIN CAMBIOS SIGNIFICATIVOS)
- * @param {string} repo - Nombre del repositorio (ej: owner/repo).
- * @param {string} packageName - Nombre del paquete.
+ * Función para obtener metadatos y APK de GitHub Releases.
  */
 async function syncFromGitHubRelease(repo, packageName) {
     const [owner, repoName] = repo.split("/");
@@ -255,7 +254,7 @@ async function syncFromGitHubRelease(repo, packageName) {
     const apkPath = `public/apps/${pName}/apk_${version}.apk`;
     await createOrUpdateGithubFile(apkPath, base64Apk, `Add APK ${pName} ${version} (GitHub Release)`);
 
-    // Nota: GitHub releases solo ofrece la descripción del release body y no tiene iconos/capturas estandarizadas.
+    const releaseBody = release.data.body || "";
     const meta = {
         source: "github_release",
         owner,
@@ -263,14 +262,13 @@ async function syncFromGitHubRelease(repo, packageName) {
         packageName: pName,
         version,
         assetName,
-        // Campos detallados:
-        iconUrl: null, // No disponible
-        summary: (release.data.body || "").split('\n')[0].substring(0, 100) + '...', // Intentar obtener un resumen
-        description: release.data.body || "No description provided in release body.",
-        screenshots: [], // No disponible
+        
+        iconUrl: null, 
+        summary: releaseBody.split('\n')[0].substring(0, 100) + '...', 
+        description: releaseBody,
+        screenshots: [], 
         warnings: "Esta es una descarga de GitHub Release. Se recomienda siempre verificar la fuente.",
         
-        // Campos técnicos:
         size: apkBuffer.length,
         addedAt: new Date().toISOString(),
         apkPath
@@ -299,14 +297,12 @@ const POPULAR_APPS_GITHUB = [
     { name: "ReVanced Manager", repo: "revanced/revanced-manager" }, 
 ];
 
-// Nueva función de fondo para la sincronización masiva
+// Función de fondo para la sincronización masiva
 function syncPopularAppsInBackground() {
     console.log("--- INICIANDO PROCESO DE SINCRONIZACIÓN MASIVA EN SEGUNDO PLANO ---");
     
-    const results = [];
     let successCount = 0;
     
-    // Función de ayuda para manejar la sincronización y loguear el resultado
     const runSync = async (app, type) => {
         try {
             let result;
@@ -319,26 +315,22 @@ function syncPopularAppsInBackground() {
             }
             console.log(`[ÉXITO] Sincronizado ${app.name} (${result.source})`);
             successCount++;
-            results.push({ query: app.name, ok: true, source: result.source });
         } catch (e) {
             console.error(`[FALLO] ${app.name} (${type}): ${e.message}`);
-            results.push({ query: app.name, ok: false, message: e.message });
         }
     };
     
-    // Ejecutar todas las sincronizaciones de forma secuencial
+    // Ejecutar todas las sincronizaciones de forma secuencial y en segundo plano.
+    // Usamos .then/.catch en lugar de async/await directo en la función principal para que no bloquee el server.
     (async () => {
-        // Sincronizar F-Droid/IzzyOnDroid
         for (const app of POPULAR_APPS_FDROID) {
             try {
                 await runSync(app, 'fdroid');
             } catch (e) {
-                // Intentar IzzyOnDroid si falla F-Droid
                 await runSync(app, 'izzyondroid');
             }
         }
         
-        // Sincronizar GitHub Releases
         for (const app of POPULAR_APPS_GITHUB) {
             await runSync(app, 'github');
         }
@@ -346,21 +338,19 @@ function syncPopularAppsInBackground() {
         console.log(`--- PROCESO DE SINCRONIZACIÓN MASIVA FINALIZADO: ${successCount} apps sincronizadas. ---`);
     })();
     
-    // Devuelve un objeto vacío, ya que no podemos devolver los resultados al cliente que inició la llamada, 
-    // pero el proceso sigue ejecutándose en el fondo.
     return { 
-        message: "Sincronización masiva iniciada en segundo plano. Los resultados se guardarán en GitHub en los próximos minutos.",
+        message: "Sincronización masiva iniciada en segundo plano.",
         totalApps: POPULAR_APPS_FDROID.length + POPULAR_APPS_GITHUB.length,
     };
 }
 
 
 // ---------------------------------------------------
-// ENDPOINTS ACTUALIZADOS
+// ENDPOINTS
 // ---------------------------------------------------
 
 /* ---------------------------------
-   1. 🔍 ENDPOINT DE BÚSQUEDA Y SINCRONIZACIÓN (SIN CAMBIOS LÓGICOS)
+   1. 🔍 ENDPOINT DE BÚSQUEDA Y SINCRONIZACIÓN (search_and_sync)
 ------------------------------------*/
 app.get("/api/search_and_sync", async (req, res) => {
     const { q } = req.query; 
@@ -414,13 +404,11 @@ app.get("/api/search_and_sync", async (req, res) => {
 
 
 /* ---------------------------------
-   2. ⭐️ ENDPOINT DE CATÁLOGO MASIVO (MODIFICADO PARA SEGUNDO PLANO)
+   2. ⭐️ ENDPOINT DE CATÁLOGO MASIVO (sync_popular_apps)
 ------------------------------------*/
 app.post("/api/sync_popular_apps", (req, res) => {
-    // LLAMADA CLAVE: Llamar a la función de sincronización y NO usar await
     const result = syncPopularAppsInBackground();
     
-    // Devolver una respuesta inmediata al cliente (antes de que expire el timeout)
     return res.json({ 
         ok: true, 
         ...result,
@@ -430,7 +418,7 @@ app.post("/api/sync_popular_apps", (req, res) => {
 
 
 /* ---------------------------------
-   3. ENDPOINTS INDIVIDUALES (Mantenidos para uso directo)
+   3. ENDPOINTS INDIVIDUALES (sync_fdroid, sync_izzyondroid, etc.)
 ------------------------------------*/
 app.get("/api/sync_fdroid", async (req, res) => {
     const { packageName } = req.query;
@@ -522,7 +510,7 @@ app.post("/api/manual_add", async (req, res) => {
 });
 
 /* ---------------------------------
-   4. 🔍 ENDPOINTS DE LISTADO (Sin cambios)
+   4. 🔍 ENDPOINTS DE LISTADO (list_apps, get_app_meta)
 ------------------------------------*/
 
 app.get("/api/list_apps", async (req, res) => {
