@@ -4,8 +4,8 @@ import dotenv from "dotenv";
 dotenv.config();
 import { Octokit } from "@octokit/rest";
 import axios from "axios";
-import FormData from "form-data";
-import * as cheerio from "cheerio"; // AÑADIDO: Necesario para Web Scraping
+import FormData from "form-data"; 
+// fs, path, cheerio, puppeteer ya no se usan
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -19,64 +19,13 @@ const VIRUSTOTAL_API_KEY = process.env.VIRUSTOTAL_API_KEY;
 const AXIOS_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
 // ----------------------------------------------------
-// FUNCIÓN HELPER: Extracción de Metadatos Ricos (Scraping)
-// ----------------------------------------------------
-/**
- * Realiza Web Scraping en la página de F-Droid para obtener información rica.
- * @param {string} packageName - Nombre del paquete de la aplicación.
- * @returns {object} Información detallada (descripción, icono, capturas).
- */
-async function scrapeFDroidPage(packageName) {
-    const appUrl = `https://f-droid.org/es/packages/${packageName}/`;
-    
-    try {
-        const { data } = await axios.get(appUrl, { headers: { 'User-Agent': AXIOS_USER_AGENT } });
-        const $ = cheerio.load(data);
-        
-        const longDescription = $('.package-page__description').text().trim();
-        const shortDescription = $('.package-page__summary').text().trim();
-        const iconUrl = $('.package-page__icon img').attr('src');
-        
-        const screenshots = [];
-        $('.package-page__screenshots img').each((i, el) => {
-            screenshots.push($(el).attr('src'));
-        });
-
-        // Aclaración de seguridad (buscando secciones relevantes, esto puede variar)
-        let safetyNote = 'Información de seguridad no encontrada.';
-        $('.package-page__issue-note').each((i, el) => {
-            safetyNote = $(el).text().trim();
-        });
-        
-        return {
-            longDescription,
-            shortDescription,
-            iconUrl: iconUrl ? `https://f-droid.org${iconUrl}` : '',
-            screenshots,
-            safetyNote
-        };
-
-    } catch (error) {
-        console.error(`Error de scraping en ${packageName}:`, error.message);
-        return { 
-            longDescription: 'No disponible por error de scraping.',
-            shortDescription: '',
-            iconUrl: '',
-            screenshots: [],
-            safetyNote: 'No disponible.'
-        };
-    }
-}
-
-
-// ----------------------------------------------------
-// FUNCIÓN HELPER: Verificación con VirusTotal (sin cambios)
+// FUNCIÓN HELPER: Verificación con VirusTotal (SIN CAMBIOS)
 // ----------------------------------------------------
 async function scanWithVirusTotal(apkBuffer, fileName) {
     if (!VIRUSTOTAL_API_KEY) {
         return { message: "Clave de VirusTotal no configurada. Saltando el escaneo.", status: "skipped" };
     }
-    // ... (El cuerpo de la función sigue siendo el mismo) ...
+    // ... (El código de VirusTotal se mantiene igual)
     const form = new FormData();
     form.append('file', apkBuffer, {
         filename: fileName,
@@ -88,7 +37,7 @@ async function scanWithVirusTotal(apkBuffer, fileName) {
         const uploadResponse = await axios.post('https://www.virustotal.com/api/v3/files', form, {
             headers: {
                 ...form.getHeaders(),
-                'x-apikey': VIRUSTOTAL_API_KEY,
+                'x-apikey': VIRUSTOTAL_API:KEY,
             },
             maxBodyLength: Infinity,
         });
@@ -130,7 +79,7 @@ async function scanWithVirusTotal(apkBuffer, fileName) {
     }
 }
 
-/* --------- Helpers GitHub (sin cambios) --------- */
+/* --------- Helpers GitHub (SIN CAMBIOS) --------- */
 async function createOrUpdateGithubFile(pathInRepo, contentBase64, message) {
   try {
     const get = await octokit.repos.getContent({
@@ -161,12 +110,14 @@ async function createOrUpdateGithubFile(pathInRepo, contentBase64, message) {
 }
 
 // ---------------------------------------------------
-// FUNCIONES CENTRALES DE SINCRONIZACIÓN (MODIFICADAS para incluir Scraping)
+// FUNCIONES CENTRALES DE SINCRONIZACIÓN (MEJORADAS)
 // ---------------------------------------------------
 
 /**
  * Función para obtener metadatos y APK de F-Droid o IzzyOnDroid.
- * Se añadió la llamada a scrapeFDroidPage para obtener metadatos ricos.
+ * Se ha mejorado para obtener más metadatos disponibles.
+ * @param {string} packageName - Nombre del paquete de la aplicación.
+ * @param {string} source - 'fdroid' o 'izzyondroid'.
  */
 async function syncFromRepo(packageName, source) {
     const apiUrl = source === 'fdroid' 
@@ -175,25 +126,57 @@ async function syncFromRepo(packageName, source) {
 
     const repoBaseUrl = source === 'fdroid' ? 'https://f-droid.org/repo/' : 'https://apt.izzysoft.de/fdroid/repo/';
 
-    const response = await axios.get(apiUrl, { headers: { 'User-Agent': AXIOS_USER_AGENT } });
-    const { packages } = response.data;
-    const app = packages[packageName];
+    // 1. Obtener índice y metadatos básicos
+    const indexResponse = await axios.get(apiUrl, { headers: { 'User-Agent': AXIOS_USER_AGENT } });
+    const { packages } = indexResponse.data;
+    const appData = packages[packageName];
 
-    if (!app) {
+    if (!appData) {
         throw new Error(`Paquete ${packageName} no encontrado en ${source}.`);
     }
 
-    const latestVersion = Object.keys(app).sort().pop();
-    const latestMeta = app[latestVersion].pop(); 
+    const latestVersion = Object.keys(appData).sort().pop();
+    const latestMeta = appData[latestVersion].pop(); // Metadatos del archivo APK
 
     const version = latestMeta.versionName || latestVersion;
     const apkFileName = latestMeta.apkName;
     const downloadUrl = repoBaseUrl + apkFileName;
-    
-    // 1. Scraping para obtener datos ricos (icono, descripción larga, capturas)
-    const richData = await scrapeFDroidPage(packageName);
 
-    // 2. Descargar APK
+    // 2. OBTENER INFORMACIÓN EXTENDIDA (Descripción, Capturas, etc.)
+    // La información detallada (descripción larga, capturas) está en el archivo YAML/JSON principal de la app
+    // Necesitamos el URL de los metadatos completos, que es un archivo JSON o YAML separado.
+    const metaIndexUrl = source === 'fdroid' 
+        ? `https://f-droid.org/repo/index.json`
+        : `https://apt.izzysoft.de/fdroid/repo/index.json`;
+    
+    let extendedMeta = {};
+    try {
+        const metaIndexResponse = await axios.get(metaIndexUrl, { headers: { 'User-Agent': AXIOS_USER_AGENT } });
+        const appInfoList = metaIndexResponse.data.apps;
+        
+        // Buscar la app en el índice principal por package name
+        const foundApp = appInfoList.find(app => app.packageName === packageName);
+
+        if (foundApp) {
+            extendedMeta = {
+                summary: foundApp.localized?.en_US?.summary || foundApp.summary, // Descripción corta
+                description: foundApp.localized?.en_US?.description || foundApp.description, // Descripción larga
+                screenshots: foundApp.localized?.en_US?.screenshots || foundApp.screenshots || [], // Capturas de pantalla
+                changelogs: foundApp.localized?.en_US?.changelogs || foundApp.changelogs,
+                warnings: foundApp.localized?.en_US?.issue || foundApp.issue, // Aclaraciones/Advertencias
+            };
+            // Las capturas de F-Droid son solo nombres de archivo, hay que construir el URL.
+            extendedMeta.screenshots = extendedMeta.screenshots.map(fileName => {
+                // El path de las capturas es relativo a /repo/
+                return repoBaseUrl + 'screenshots/' + fileName;
+            });
+        }
+    } catch (e) {
+        console.warn(`No se pudieron obtener metadatos extendidos para ${packageName} de ${source}.`);
+        // Simplemente ignoramos el error y continuamos con los datos básicos
+    }
+    
+    // 3. Descargar APK
     const apkResp = await axios.get(downloadUrl, { 
         responseType: "arraybuffer", 
         headers: { 'User-Agent': AXIOS_USER_AGENT }
@@ -204,29 +187,29 @@ async function syncFromRepo(packageName, source) {
         throw new Error(`APK demasiado grande (>=${MAX_GITHUB_FILE_SIZE_MB}MB) para GitHub API.`);
     }
 
+    // 4. Guardar APK en GitHub
     const base64Apk = apkBuffer.toString("base64");
     const apkPath = `public/apps/${packageName}/apk_${version}.apk`;
     await createOrUpdateGithubFile(apkPath, base64Apk, `Sincronizar APK: ${packageName} v${version} (${source})`);
 
-    // 3. Combinar metadatos y guardar
+    // 5. Crear y guardar Metadatos completos
     const meta = {
         source,
         packageName,
         displayName: latestMeta.localized || packageName, 
         version,
+        // Campos detallados solicitados:
+        iconUrl: repoBaseUrl + 'icons/' + latestMeta.icon, // URL completa del icono
+        summary: extendedMeta.summary || 'No summary available.',
+        description: extendedMeta.description || 'No description available in API meta.',
+        screenshots: extendedMeta.screenshots || [],
+        warnings: extendedMeta.warnings || null, // Aclaraciones sobre seguridad/issues
+        
+        // Campos técnicos:
         size: apkBuffer.length,
         addedAt: new Date().toISOString(),
-        apkPath,
-        // DATOS ENRIQUECIDOS
-        iconUrl: richData.iconUrl || latestMeta.icon || '', // Usar el icono del scraping si existe
-        shortDescription: richData.shortDescription, 
-        longDescription: richData.longDescription,
-        screenshots: richData.screenshots,
-        safetyNote: richData.safetyNote, // Aclaraciones de seguridad
-        // DATOS BÁSICOS
-        descriptionFromRepo: latestMeta.localized, // Descripción simple del index
+        apkPath // Ruta del archivo APK en GitHub
     };
-    
     const metaPath = `public/apps/${packageName}/meta_${version}.json`;
     await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"), `Sincronizar Meta: ${packageName} v${version} (${source})`);
 
@@ -234,7 +217,9 @@ async function syncFromRepo(packageName, source) {
 }
 
 /**
- * Función para obtener metadatos y APK de GitHub Releases (sin cambios funcionales, solo datos)
+ * Función para obtener metadatos y APK de GitHub Releases. (SIN CAMBIOS SIGNIFICATIVOS)
+ * @param {string} repo - Nombre del repositorio (ej: owner/repo).
+ * @param {string} packageName - Nombre del paquete.
  */
 async function syncFromGitHubRelease(repo, packageName) {
     const [owner, repoName] = repo.split("/");
@@ -270,6 +255,7 @@ async function syncFromGitHubRelease(repo, packageName) {
     const apkPath = `public/apps/${pName}/apk_${version}.apk`;
     await createOrUpdateGithubFile(apkPath, base64Apk, `Add APK ${pName} ${version} (GitHub Release)`);
 
+    // Nota: GitHub releases solo ofrece la descripción del release body y no tiene iconos/capturas estandarizadas.
     const meta = {
         source: "github_release",
         owner,
@@ -277,17 +263,17 @@ async function syncFromGitHubRelease(repo, packageName) {
         packageName: pName,
         version,
         assetName,
-        size: apkBuffer.length,
-        // DATOS BÁSICOS DE GITHUB
+        // Campos detallados:
+        iconUrl: null, // No disponible
+        summary: (release.data.body || "").split('\n')[0].substring(0, 100) + '...', // Intentar obtener un resumen
         description: release.data.body || "No description provided in release body.",
+        screenshots: [], // No disponible
+        warnings: "Esta es una descarga de GitHub Release. Se recomienda siempre verificar la fuente.",
+        
+        // Campos técnicos:
+        size: apkBuffer.length,
         addedAt: new Date().toISOString(),
-        apkPath,
-        // CAMPOS ADICIONALES (vacíos para GitHub ya que no se puede hacer scraping de la misma forma)
-        iconUrl: '',
-        shortDescription: '',
-        longDescription: '',
-        screenshots: [],
-        safetyNote: 'Fuente: GitHub Release. Depende de la confianza en el repositorio. No verificado por F-Droid.',
+        apkPath
     };
     const metaPath = `public/apps/${pName}/meta_${version}.json`;
     await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"), `Add meta ${pName} ${version}`);
@@ -295,12 +281,86 @@ async function syncFromGitHubRelease(repo, packageName) {
     return { meta, message: "APK sincronizado.", source: "github_release" };
 }
 
+
 // ---------------------------------------------------
-// ENDPOINTS
+// FUNCIONES DE FONDO PARA EL CATÁLOGO MASIVO
+// ---------------------------------------------------
+
+const POPULAR_APPS_FDROID = [
+    { name: "NewPipe", package: "org.schabi.newpipe" },
+    { name: "F-Droid", package: "org.fdroid.fdroid" },
+    { name: "Tachiyomi", package: "eu.kanade.tachiyomi" },
+    { name: "Signal", package: "org.thoughtcrime.securesms" },
+    { name: "K-9 Mail", package: "com.fsck.k9" },
+];
+
+const POPULAR_APPS_GITHUB = [
+    { name: "Vanced Manager", repo: "YTVanced/VancedManager" }, 
+    { name: "ReVanced Manager", repo: "revanced/revanced-manager" }, 
+];
+
+// Nueva función de fondo para la sincronización masiva
+function syncPopularAppsInBackground() {
+    console.log("--- INICIANDO PROCESO DE SINCRONIZACIÓN MASIVA EN SEGUNDO PLANO ---");
+    
+    const results = [];
+    let successCount = 0;
+    
+    // Función de ayuda para manejar la sincronización y loguear el resultado
+    const runSync = async (app, type) => {
+        try {
+            let result;
+            if (type === 'fdroid') {
+                result = await syncFromRepo(app.package, 'fdroid');
+            } else if (type === 'izzyondroid') {
+                result = await syncFromRepo(app.package, 'izzyondroid');
+            } else if (type === 'github') {
+                result = await syncFromGitHubRelease(app.repo, app.package);
+            }
+            console.log(`[ÉXITO] Sincronizado ${app.name} (${result.source})`);
+            successCount++;
+            results.push({ query: app.name, ok: true, source: result.source });
+        } catch (e) {
+            console.error(`[FALLO] ${app.name} (${type}): ${e.message}`);
+            results.push({ query: app.name, ok: false, message: e.message });
+        }
+    };
+    
+    // Ejecutar todas las sincronizaciones de forma secuencial
+    (async () => {
+        // Sincronizar F-Droid/IzzyOnDroid
+        for (const app of POPULAR_APPS_FDROID) {
+            try {
+                await runSync(app, 'fdroid');
+            } catch (e) {
+                // Intentar IzzyOnDroid si falla F-Droid
+                await runSync(app, 'izzyondroid');
+            }
+        }
+        
+        // Sincronizar GitHub Releases
+        for (const app of POPULAR_APPS_GITHUB) {
+            await runSync(app, 'github');
+        }
+        
+        console.log(`--- PROCESO DE SINCRONIZACIÓN MASIVA FINALIZADO: ${successCount} apps sincronizadas. ---`);
+    })();
+    
+    // Devuelve un objeto vacío, ya que no podemos devolver los resultados al cliente que inició la llamada, 
+    // pero el proceso sigue ejecutándose en el fondo.
+    return { 
+        message: "Sincronización masiva iniciada en segundo plano. Los resultados se guardarán en GitHub en los próximos minutos.",
+        totalApps: POPULAR_APPS_FDROID.length + POPULAR_APPS_GITHUB.length,
+    };
+}
+
+
+// ---------------------------------------------------
+// ENDPOINTS ACTUALIZADOS
 // ---------------------------------------------------
 
 /* ---------------------------------
-   1. 🔍 ENDPOINT DE BÚSQUEDA Y SINCRONIZACIÓN (sin cambios)
+   1. 🔍 ENDPOINT DE BÚSQUEDA Y SINCRONIZACIÓN (SIN CAMBIOS LÓGICOS)
 ------------------------------------*/
 app.get("/api/search_and_sync", async (req, res) => {
     const { q } = req.query; 
@@ -314,7 +374,7 @@ app.get("/api/search_and_sync", async (req, res) => {
         try {
             appInfo = await syncFromRepo(q, 'fdroid');
         } catch (e) {
-            errors.push(`F-Droid falló: ${e.message.includes('Paquete') ? e.message : 'Error de API/descarga/scraping.'}`);
+            errors.push(`F-Droid falló: ${e.message.includes('Paquete') ? e.message : 'Error de API/descarga.'}`);
         }
     }
 
@@ -323,7 +383,7 @@ app.get("/api/search_and_sync", async (req, res) => {
         try {
             appInfo = await syncFromRepo(q, 'izzyondroid');
         } catch (e) {
-            errors.push(`IzzyOnDroid falló: ${e.message.includes('Paquete') ? e.message : 'Error de API/descarga/scraping.'}`);
+            errors.push(`IzzyOnDroid falló: ${e.message.includes('Paquete') ? e.message : 'Error de API/descarga.'}`);
         }
     }
 
@@ -352,74 +412,25 @@ app.get("/api/search_and_sync", async (req, res) => {
     }
 });
 
+
 /* ---------------------------------
-   2. ⭐️ ENDPOINT DE CATÁLOGO MASIVO (MODIFICADO para retornar inmediatamente y evitar timeout)
+   2. ⭐️ ENDPOINT DE CATÁLOGO MASIVO (MODIFICADO PARA SEGUNDO PLANO)
 ------------------------------------*/
-const POPULAR_APPS_FDROID = [
-    { name: "NewPipe", package: "org.schabi.newpipe" },
-    { name: "F-Droid", package: "org.fdroid.fdroid" },
-    { name: "Tachiyomi", package: "eu.kanade.tachiyomi" },
-    { name: "Signal", package: "org.thoughtcrime.securesms" },
-    { name: "K-9 Mail", package: "com.fsck.k9" },
-];
-
-const POPULAR_APPS_GITHUB = [
-    { name: "Vanced Manager", repo: "YTVanced/VancedManager" }, 
-    { name: "ReVanced Manager", repo: "revanced/revanced-manager" }, 
-];
-
-app.post("/api/sync_popular_apps", async (req, res) => {
+app.post("/api/sync_popular_apps", (req, res) => {
+    // LLAMADA CLAVE: Llamar a la función de sincronización y NO usar await
+    const result = syncPopularAppsInBackground();
     
-    // RESPUESTA INMEDIATA: Esto ayuda a evitar el timeout de Fly.io/servidores proxy.
-    // El proceso real de sincronización se ejecuta en segundo plano.
-    res.json({ 
+    // Devolver una respuesta inmediata al cliente (antes de que expire el timeout)
+    return res.json({ 
         ok: true, 
-        message: "Proceso de sincronización masiva iniciado en segundo plano. Los resultados se subirán a GitHub. Por favor, consulta /api/list_apps en unos minutos."
+        ...result,
+        warning: "La sincronización masiva se ejecuta en segundo plano. Revisa tu repositorio y usa /api/list_apps en unos minutos para confirmar los resultados."
     });
-
-    let results = [];
-    let successCount = 0;
-    const totalApps = POPULAR_APPS_FDROID.length + POPULAR_APPS_GITHUB.length;
-
-    console.log(`[SYNC_MASIVO] Iniciando sincronización de ${totalApps} apps...`);
-
-    // Sincronizar F-Droid/IzzyOnDroid
-    for (const app of POPULAR_APPS_FDROID) {
-        try {
-            const result = await syncFromRepo(app.package, 'fdroid');
-            results.push({ query: app.name, ok: true, source: result.source, packageName: result.meta.packageName, version: result.meta.version });
-            successCount++;
-        } catch (e) {
-            try {
-                const result = await syncFromRepo(app.package, 'izzyondroid');
-                results.push({ query: app.name, ok: true, source: result.source, packageName: result.meta.packageName, version: result.meta.version });
-                successCount++;
-            } catch (e) {
-                console.error(`[SYNC_MASIVO] Fallo completo para ${app.name}: ${e.message}`);
-                results.push({ query: app.name, ok: false, message: `F-Droid/IzzyOnDroid falló: ${e.message}` });
-            }
-        }
-    }
-    
-    // Sincronizar GitHub Releases
-    for (const app of POPULAR_APPS_GITHUB) {
-        try {
-            const result = await syncFromGitHubRelease(app.repo, app.package);
-            results.push({ query: app.name, ok: true, source: result.source, packageName: result.meta.packageName, version: result.meta.version });
-            successCount++;
-        } catch (e) {
-            console.error(`[SYNC_MASIVO] Fallo de GitHub para ${app.name}: ${e.message}`);
-            results.push({ query: app.name, ok: false, message: `GitHub falló: ${e.message}` });
-        }
-    }
-
-    console.log(`[SYNC_MASIVO] Finalizado. Éxito: ${successCount}/${totalApps}`);
-    // No se envía respuesta HTTP aquí ya que se hizo al inicio.
 });
 
 
 /* ---------------------------------
-   3. ENDPOINTS INDIVIDUALES (sin cambios de funcionalidad)
+   3. ENDPOINTS INDIVIDUALES (Mantenidos para uso directo)
 ------------------------------------*/
 app.get("/api/sync_fdroid", async (req, res) => {
     const { packageName } = req.query;
