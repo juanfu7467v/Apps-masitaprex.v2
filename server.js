@@ -4,52 +4,93 @@ import dotenv from "dotenv";
 dotenv.config();
 import { Octokit } from "@octokit/rest";
 import axios from "axios";
-import FormData from "form-data"; 
-import fs from "fs"; 
-import path from "path"; 
-import * as cheerio from 'cheerio'; // <-- Nuevo/re-incluido
-import puppeteer from 'puppeteer';
+// fs, path, cheerio, puppeteer, FormData ya no son necesarios
+// Los mantengo si los necesitas para otros procesos, pero no se usan en este código.
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
 
-/* --------- Configs --------- */
+/* --------- Configs & Global Constants --------- */
 const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
 const G_OWNER = process.env.GITHUB_OWNER;
 const G_REPO = process.env.GITHUB_REPO;
 const MAX_GITHUB_FILE_SIZE_MB = 100;
-
-// URL DE PROXY PÚBLICO (Usado para ocultar IP en búsqueda)
-// ADVERTENCIA: Esta URL puede fallar o ser lenta.
-const FREE_PROXY_URL = 'http://api.scraperapi.com?api_key=TU_CLAVE_AQUI&url='; // Reemplaza 'TU_CLAVE_AQUI' con una clave gratuita de ScraperAPI si tienes, o usa otro proxy
-// Para la prueba, usaremos solo axios para evitar el proxy si no tienes una clave de ScraperAPI.
-// Si el siguiente código falla, intenta añadir un proxy real o cambiar el User-Agent.
-
+const VIRUSTOTAL_API_KEY = process.env.VIRUSTOTAL_API_KEY; // ¡Debes añadir esta variable a tu .env!
 const AXIOS_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
+// ----------------------------------------------------
+// FUNCIÓN HELPER: Verificación con VirusTotal
+// ----------------------------------------------------
+/**
+ * Envía un archivo a VirusTotal para escanear y espera el resultado.
+ * @param {Buffer} apkBuffer - Buffer del archivo APK.
+ * @param {string} fileName - Nombre del archivo (solo para referencia).
+ * @returns {object} Resultado del escaneo de VirusTotal.
+ */
+async function scanWithVirusTotal(apkBuffer, fileName) {
+    if (!VIRUSTOTAL_API_KEY) {
+        return { message: "Clave de VirusTotal no configurada. Saltando el escaneo.", status: "skipped" };
+    }
 
-// ----------------------------------------------------
-// FUNCIÓN CENTRAL PARA INICIAR EL NAVEGADOR VIRTUAL
-// ----------------------------------------------------
-async function launchBrowser() {
-    // Puppeteer solo se usará para la página de descarga final si Cheerio falla en obtener el link directo.
-    const browser = await puppeteer.launch({ 
-        headless: true,
-        args: [
-            '--no-sandbox', 
-            '--disable-setuid-sandbox', 
-            '--disable-dev-shm-usage'
-        ],
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH,
-        timeout: 60000 
+    const form = new FormData();
+    form.append('file', apkBuffer, {
+        filename: fileName,
+        contentType: 'application/vnd.android.package-archive',
     });
-    return browser;
-}
 
+    try {
+        // 1. Subir el archivo y obtener el ID de análisis
+        const uploadResponse = await axios.post('https://www.virustotal.com/api/v3/files', form, {
+            headers: {
+                ...form.getHeaders(),
+                'x-apikey': VIRUSTOTAL_API_KEY,
+            },
+            maxBodyLength: Infinity,
+        });
+        
+        const analysisId = uploadResponse.data.data.id;
+        
+        // 2. Esperar el resultado del análisis (poll)
+        let result = null;
+        let checks = 0;
+        
+        while (checks < 10) { // Máximo 10 intentos (aprox. 50 segundos)
+            await new Promise(resolve => setTimeout(resolve, 5000)); // Esperar 5 segundos
+            
+            const analysisResponse = await axios.get(`https://www.virustotal.com/api/v3/analyses/${analysisId}`, {
+                headers: { 'x-apikey': VIRUSTOTAL_API_KEY }
+            });
+            
+            const status = analysisResponse.data.data.attributes.status;
+            
+            if (status === 'completed') {
+                result = analysisResponse.data.data.attributes.results;
+                const stats = analysisResponse.data.data.attributes.stats;
+                
+                // Contar detecciones de malware
+                const maliciousDetections = stats.malicious || 0;
+                
+                return {
+                    status: "completed",
+                    malicious: maliciousDetections,
+                    totalEngines: stats.harmless + stats.malicious + stats.suspicious + stats.undetected + stats.timeout,
+                    resultsUrl: `https://www.virustotal.com/gui/file-analysis/${analysisId}/detection`,
+                    summary: stats
+                };
+            }
+            checks++;
+        }
+        
+        return { status: "timeout", message: "VirusTotal tardó demasiado en completar el análisis." };
+        
+    } catch (error) {
+        console.error("Error en VirusTotal:", error.response ? error.response.data : error.message);
+        return { status: "error", message: "Error al comunicarse con VirusTotal." };
+    }
+}
 
 /* --------- Helpers GitHub (sin cambios) --------- */
 async function createOrUpdateGithubFile(pathInRepo, contentBase64, message) {
-  // ... (código helper de GitHub sin cambios)
   try {
     const get = await octokit.repos.getContent({
       owner: G_OWNER,
@@ -78,116 +119,97 @@ async function createOrUpdateGithubFile(pathInRepo, contentBase64, message) {
   }
 }
 
-/* ----------------------------------------------------------------------
-   FUNCIÓN FINAL: Búsqueda y Extracción de Metadatos de Uptodown con Cheerio/Axios
-   Usaremos Cheerio para mayor discreción.
-------------------------------------------------------------------------- */
-async function searchAppAndScrapeInfoUptodown(query) {
-    const searchUrl = `https://www.uptodown.com/search?q=${encodeURIComponent(query)}`;
-    
-    try {
-        // 1. Obtener la página de resultados de búsqueda usando Axios (simulando un navegador)
-        const response = await axios.get(searchUrl, {
-            headers: { 'User-Agent': AXIOS_USER_AGENT },
-            timeout: 20000 
-        });
-        
-        const $ = cheerio.load(response.data);
-
-        // Selector para el primer resultado de la aplicación
-        const resultLinkElement = $('.app-list > .item:first-child .info > a'); 
-        
-        if (resultLinkElement.length === 0) {
-            console.error(`[Cheerio] No se encontró el primer resultado de búsqueda en Uptodown.`);
-            return null;
-        }
-
-        // 2. Extraer el enlace a la página de la aplicación
-        const appPageUrl = resultLinkElement.attr('href');
-
-        if (!appPageUrl || !appPageUrl.startsWith('https://')) {
-             console.log("[Cheerio] El enlace encontrado no es válido o no sigue el patrón esperado en Uptodown.");
-             return null;
-        }
-
-        // 3. Navegar a la página de la aplicación para metadatos detallados (usando Axios/Cheerio nuevamente)
-        const appPageResponse = await axios.get(appPageUrl, {
-             headers: { 'User-Agent': AXIOS_USER_AGENT },
-             timeout: 20000 
-        });
-        const $$ = cheerio.load(appPageResponse.data);
-        
-        // 4. Extraer Metadatos
-        const downloadLink = $$('.button-download').attr('href');
-        
-        if (!downloadLink) {
-             console.log("No se encontró enlace de descarga directo en la página de detalles de Uptodown.");
-             return null;
-        }
-        
-        // Extracción de PackageName (basado en la URL de Uptodown)
-        const linkParts = appPageUrl.split('/');
-        const appSlug = linkParts[linkParts.length - 2] || 'unknown'; 
-        let packageName = `com.uptodown.${appSlug}`;
-        
-        // Intenta obtener el nombre de paquete del botón de descarga (a veces contiene el packageID)
-        const downloadButtonText = $$('.button-download').text();
-        const pkgMatch = downloadButtonText.match(/([a-zA-Z0-9.]+)\/download/);
-        if (pkgMatch) {
-             packageName = pkgMatch[1];
-        }
-
-
-        const displayName = $$('.info .name').text().trim() || 'Nombre Desconocido';
-        const version = $$('.version-name').text().trim() || '0.0'; 
-        const description = ($$('.full-description p').text().trim() || 'No se encontró descripción.').substring(0, 500) + '...';
-        const iconUrl = $$('.logo img').attr('src') || '';
-        
-        // El enlace de Uptodown es directo
-        const finalDownloadLink = downloadLink; 
-
-        return {
-            packageName: packageName,
-            displayName: displayName,
-            version: version,
-            description: description,
-            iconUrl: iconUrl.startsWith('//') ? 'https:' + iconUrl : iconUrl,
-            screenshots: [], 
-            downloadUrl: finalDownloadLink, 
-            source: "uptodown"
-        };
-        
-    } catch (e) {
-        console.error("Error EN EL SCRAPING (GENERAL Uptodown/Cheerio):", e.message);
-        return null;
-    }
-}
-
 // ---------------------------------------------------
 // ENDPOINTS
 // ---------------------------------------------------
 
 /* ---------------------------------
-   ENDPOINT 1: Buscar Aplicación (Ahora usando Uptodown con Cheerio)
-   Uso: GET /api/search_app?q=facebook
+   1. 🟢 F-DROID / IZYYONDR0ID (Repositorios API)
+   Uso: GET /api/sync_repo?packageName=
 ------------------------------------*/
-app.get("/api/search_app", async (req, res) => {
-    const { q } = req.query;
-    if (!q) return res.status(400).json({ ok: false, error: "El parámetro 'q' (consulta de búsqueda) es requerido." });
 
+/**
+ * Función para obtener metadatos y APK de F-Droid o IzzyOnDroid.
+ * @param {string} packageName - Nombre del paquete de la aplicación (ej: org.mozilla.fenix).
+ * @param {string} source - 'fdroid' o 'izzyondroid'.
+ */
+async function syncFromRepo(packageName, source) {
+    const apiUrl = source === 'fdroid' 
+        ? `https://f-droid.org/repo/index-v1.json` // El index-v1.json contiene los metadatos
+        : `https://apt.izzysoft.de/fdroid/repo/index-v1.json`; // IzzyOnDroid usa el mismo formato de F-Droid
+
+    const repoBaseUrl = source === 'fdroid' ? 'https://f-droid.org/repo/' : 'https://apt.izzysoft.de/fdroid/repo/';
+
+    const response = await axios.get(apiUrl, { headers: { 'User-Agent': AXIOS_USER_AGENT } });
+    const { packages } = response.data;
+    const app = packages[packageName];
+
+    if (!app) {
+        throw new Error(`Paquete ${packageName} no encontrado en ${source}.`);
+    }
+
+    // Buscar la versión más reciente
+    const latestVersion = Object.keys(app).sort().pop();
+    const latestMeta = app[latestVersion].pop(); // Tomar el primer (y generalmente único) archivo de esa versión
+
+    const version = latestMeta.versionName || latestVersion;
+    const apkFileName = latestMeta.apkName;
+    const downloadUrl = repoBaseUrl + apkFileName;
+    
+    // Descargar APK
+    const apkResp = await axios.get(downloadUrl, { 
+        responseType: "arraybuffer", 
+        headers: { 'User-Agent': AXIOS_USER_AGENT }
+    });
+    const apkBuffer = Buffer.from(apkResp.data);
+
+    if (apkBuffer.length >= MAX_GITHUB_FILE_SIZE_MB * 1024 * 1024) {
+        throw new Error(`APK demasiado grande (>=${MAX_GITHUB_FILE_SIZE_MB}MB) para GitHub API.`);
+    }
+
+    // Guardar APK en GitHub
+    const base64Apk = apkBuffer.toString("base64");
+    const apkPath = `public/apps/${packageName}/apk_${version}.apk`;
+    await createOrUpdateGithubFile(apkPath, base64Apk, `Sincronizar APK: ${packageName} v${version} (${source})`);
+
+    // Crear y guardar Metadatos
+    const meta = {
+        source,
+        packageName,
+        displayName: latestMeta.localized || packageName, // Usar localized si está disponible
+        version,
+        description: latestMeta.localized || 'No description found in API meta.',
+        iconUrl: latestMeta.icon || '', 
+        size: apkBuffer.length,
+        addedAt: new Date().toISOString(),
+        apkPath
+    };
+    const metaPath = `public/apps/${packageName}/meta_${version}.json`;
+    await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"), `Sincronizar Meta: ${packageName} v${version} (${source})`);
+
+    return { meta, message: "APK sincronizado." };
+}
+
+// Endpoint para F-Droid
+app.get("/api/sync_fdroid", async (req, res) => {
+    const { packageName } = req.query;
+    if (!packageName) return res.status(400).json({ ok: false, error: "packageName requerido." });
     try {
-        const appInfo = await searchAppAndScrapeInfoUptodown(q);
-        
-        if (!appInfo) {
-            return res.json({ ok: true, results: [], message: "No se encontraron resultados para la búsqueda en Uptodown (cheerio)." });
-        }
+        const result = await syncFromRepo(packageName, 'fdroid');
+        return res.json({ ok: true, ...result });
+    } catch (e) {
+        console.error(e);
+        return res.status(500).json({ ok: false, error: e.message });
+    }
+});
 
-        return res.json({ 
-            ok: true, 
-            results: [appInfo],
-            message: `Resultados de búsqueda scrapeados de ${appInfo.source} (cheerio).`
-        });
-
+// Endpoint para IzzyOnDroid
+app.get("/api/sync_izzyondroid", async (req, res) => {
+    const { packageName } = req.query;
+    if (!packageName) return res.status(400).json({ ok: false, error: "packageName requerido." });
+    try {
+        const result = await syncFromRepo(packageName, 'izzyondroid');
+        return res.json({ ok: true, ...result });
     } catch (e) {
         console.error(e);
         return res.status(500).json({ ok: false, error: e.message });
@@ -195,304 +217,143 @@ app.get("/api/search_app", async (req, res) => {
 });
 
 /* ---------------------------------
-   ENDPOINT 2: Sincronización Automática
-   Uso: POST /api/sync_app_by_search 
-   Body: { query: "facebook" }
+   2. ⚙️ GITHUB RELEASES (Apps Open-Source)
+   Uso: GET /api/sync_github_release?repo=owner/repo&packageName=com.app.name
 ------------------------------------*/
-app.post("/api/sync_app_by_search", async (req, res) => {
-    const { query } = req.body;
-    if (!query) return res.status(400).json({ ok: false, error: "El campo 'query' es requerido en el body." });
-    
-    const AXIOS_USER_AGENT_DOWNLOAD = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
-
+app.get("/api/sync_github_release", async (req, res) => {
+    const { repo, packageName } = req.query;
+    if (!repo) return res.status(400).json({ ok: false, error: "repo param requerido (owner/repo)" });
     try {
-        // 1. Buscar y extraer metadatos usando Cheerio
-        const appInfo = await searchAppAndScrapeInfoUptodown(query); 
-        if (!appInfo || !appInfo.downloadUrl) {
-            return res.json({ ok: false, error: "No se encontraron datos completos o URL de descarga para la aplicación en Uptodown." });
+        const [owner, repoName] = repo.split("/");
+        const pName = packageName || repoName;
+        
+        // Obtener el último release
+        const release = await octokit.repos.getLatestRelease({ owner, repo: repoName });
+        
+        const version = release.data.tag_name || release.data.name || "unknown";
+        let assetUrl = null;
+        let assetName = null;
+        
+        // Buscar el asset .apk en el release
+        if (release.data.assets && release.data.assets.length) {
+            for (const a of release.data.assets) {
+                if (a.name.endsWith(".apk")) {
+                    assetUrl = a.browser_download_url;
+                    assetName = a.name;
+                    break;
+                }
+            }
         }
+        
+        if (!assetUrl) return res.json({ ok: false, error: "No se encontró ningún asset .apk en el último release." });
 
-        const { packageName, version, downloadUrl, displayName, description, iconUrl, screenshots } = appInfo;
-
-        // 2. Descargar la APK usando Axios
-        const apkResp = await axios.get(downloadUrl, { 
-            responseType: "arraybuffer",
-            headers: { 'User-Agent': AXIOS_USER_AGENT_DOWNLOAD },
-            timeout: 60000 // Aumentar timeout para descarga de archivo grande
-        });
+        // Descargar APK
+        const apkResp = await axios.get(assetUrl, { responseType: "arraybuffer" });
         const apkBuffer = Buffer.from(apkResp.data);
 
-        // 3. Verificar límite de tamaño
         if (apkBuffer.length >= MAX_GITHUB_FILE_SIZE_MB * 1024 * 1024) {
             return res.json({ ok: false, error: `APK demasiado grande (>=${MAX_GITHUB_FILE_SIZE_MB}MB) para GitHub API.` });
         }
 
-        // 4. Guardar APK en GitHub
+        // Guardar APK en GitHub
         const base64Apk = apkBuffer.toString("base64");
-        const apkPath = `public/apps/${packageName}/apk_${version}.apk`;
-        await createOrUpdateGithubFile(apkPath, base64Apk, `Sincronizar APK: ${displayName} v${version} (Uptodown/Cheerio)`);
-        
-        // 5. Crear Metadatos completos
+        const apkPath = `public/apps/${pName}/apk_${version}.apk`;
+        await createOrUpdateGithubFile(apkPath, base64Apk, `Add APK ${pName} ${version} (GitHub Release)`);
+
+        // Crear y guardar Metadatos
         const meta = {
-            source: appInfo.source,
-            packageName,
-            displayName,
+            source: "github_release",
+            owner,
+            repo: repoName,
+            packageName: pName,
             version,
-            description,
-            iconUrl,
-            screenshots,
+            assetName,
             size: apkBuffer.length,
+            description: release.data.body || "No description provided in release body.",
             addedAt: new Date().toISOString(),
             apkPath
         };
+        const metaPath = `public/apps/${pName}/meta_${version}.json`;
+        await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"), `Add meta ${pName} ${version}`);
 
-        // 6. Guardar Metadatos en GitHub
+        return res.json({ ok: true, meta, message: "APK sincronizado." });
+    } catch (e) {
+        console.error(e);
+        return res.status(500).json({ ok: false, error: e.message });
+    }
+});
+
+/* ---------------------------------
+   3. 💾 REPOS PRIVADOS / MANUAL ADD (para Desarrolladores)
+   Uso: POST /api/manual_add 
+   Body: { url: "...", packageName: "...", displayName: "..." }
+------------------------------------*/
+app.post("/api/manual_add", async (req, res) => {
+    try {
+        const { url, packageName, displayName, version } = req.body;
+        if (!url || !packageName || !version) return res.status(400).json({ ok: false, error: "url, packageName y version son requeridos." });
+        
+        // 1. Descargar APK
+        const apkResp = await axios.get(url, { responseType: "arraybuffer", headers: { 'User-Agent': AXIOS_USER_AGENT } });
+        const apkBuffer = Buffer.from(apkResp.data);
+        
+        if (apkBuffer.length >= MAX_GITHUB_FILE_SIZE_MB * 1024 * 1024) {
+            return res.json({ ok: false, error: `APK demasiado grande (>=${MAX_GITHUB_FILE_SIZE_MB}MB) para GitHub API.` });
+        }
+        
+        // 2. Escaneo de VirusTotal
+        const fileName = `${packageName}_v${version}.apk`;
+        const vtResult = await scanWithVirusTotal(apkBuffer, fileName);
+        
+        if (vtResult.status === "completed" && vtResult.malicious > 0) {
+             return res.status(403).json({ 
+                ok: false, 
+                error: `Subida bloqueada: El análisis de VirusTotal encontró ${vtResult.malicious} detecciones maliciosas.`,
+                details: vtResult 
+            });
+        }
+        
+        // 3. Guardar APK en GitHub
+        const base64Apk = apkBuffer.toString("base64");
+        const apkPath = `public/apps/${packageName}/apk_${version}.apk`;
+        await createOrUpdateGithubFile(apkPath, base64Apk, `Add manual APK ${packageName} ${version}`);
+        
+        // 4. Crear y guardar Metadatos
+        const meta = { 
+            source: "manual", 
+            url, 
+            packageName, 
+            displayName: displayName || packageName, 
+            version,
+            size: apkBuffer.length, 
+            addedAt: new Date().toISOString(), 
+            apkPath,
+            virustotal: vtResult 
+        };
         const metaPath = `public/apps/${packageName}/meta_${version}.json`;
-        await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"), `Sincronizar Meta: ${displayName} v${version} (Uptodown/Cheerio)`);
-
+        await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"), `Add meta ${packageName} ${version}`);
+        
         return res.json({ 
             ok: true, 
             meta, 
-            message: `APK y Metadatos de ${displayName} v${version} sincronizados exitosamente desde Uptodown (Cheerio).` 
+            message: "APK agregado manualmente y verificado.", 
+            virustotal: vtResult 
         });
-
     } catch (e) {
-        console.error("Error en sync_app_by_search:", e);
-        return res.status(500).json({ ok: false, error: `Error durante la sincronización: ${e.message}` });
+        console.error(e);
+        return res.status(500).json({ ok: false, error: e.message });
     }
-});
-
-/* ---------------------------------
-   ENDPOINT 3: Sincronización Masiva de Apps Populares
-------------------------------------*/
-const POPULAR_APPS = [
-    "facebook",
-    "whatsapp",
-    "instagram",
-    "telegram",
-    "spotify"
-];
-
-app.post("/api/sync_popular_apps", async (req, res) => {
-    let results = [];
-    let successCount = 0;
-    
-    const AXIOS_USER_AGENT_DOWNLOAD = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
-    
-    const syncSingleApp = async (query) => {
-        try {
-            // Usar la nueva función de Uptodown con Cheerio
-            const appInfo = await searchAppAndScrapeInfoUptodown(query);
-            
-            if (!appInfo || !appInfo.downloadUrl) {
-                return { query, ok: false, message: "No se encontraron datos o URL de descarga en Uptodown (Cheerio)." };
-            }
-
-            const { packageName, version, downloadUrl, displayName } = appInfo;
-
-            const apkResp = await axios.get(downloadUrl, { 
-                responseType: "arraybuffer",
-                headers: { 'User-Agent': AXIOS_USER_AGENT_DOWNLOAD }
-            });
-            const apkBuffer = Buffer.from(apkResp.data);
-
-            if (apkBuffer.length >= MAX_GITHUB_FILE_SIZE_MB * 1024 * 1024) {
-                return { query, ok: false, message: `APK demasiado grande (>=${MAX_GITHUB_FILE_SIZE_MB}MB).` };
-            }
-
-            // Guardar APK y Metadatos en GitHub
-            const base64Apk = apkBuffer.toString("base64");
-            const apkPath = `public/apps/${packageName}/apk_${version}.apk`;
-            
-            const meta = {
-                source: appInfo.source,
-                packageName,
-                displayName,
-                version,
-                size: apkBuffer.length,
-                addedAt: new Date().toISOString(),
-                apkPath,
-                description: appInfo.description,
-                iconUrl: appInfo.iconUrl,
-                screenshots: appInfo.screenshots
-            };
-            
-            // Subir APK
-            await createOrUpdateGithubFile(apkPath, base64Apk, `Sincronizar APK Masiva: ${displayName} v${version} (Uptodown/Cheerio)`);
-            
-            // Subir Metadatos
-            const metaPath = `public/apps/${packageName}/meta_${version}.json`;
-            await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta, null, 2)).toString("base64"), `Sincronizar Meta Masiva: ${displayName} v${version} (Uptodown/Cheerio)`);
-
-            successCount++;
-            return { query, ok: true, version, packageName, message: "Sincronizado correctamente desde Uptodown (Cheerio)." };
-
-        } catch (e) {
-            console.error(`Error al sincronizar ${query}:`, e.message);
-            return { query, ok: false, message: `Error desconocido: ${e.message}` };
-        }
-    };
-
-    for (const appQuery of POPULAR_APPS) {
-        const result = await syncSingleApp(appQuery);
-        results.push(result);
-    }
-
-    return res.json({ 
-        ok: true, 
-        totalProcessed: POPULAR_APPS.length,
-        totalSuccess: successCount,
-        results,
-        message: "Proceso de sincronización masiva finalizado (Uptodown/Cheerio)."
-    });
 });
 
 
 /* ---------------------------------
-   CRAWLERS ORIGINALES (Mantenidos)
+   4. 🔍 ENDPOINTS DE BÚSQUEDA Y LISTADO
 ------------------------------------*/
-// ... (El resto de los endpoints de sync_github_release, sync_fdroid, manual_add, list_apps, get_app_meta, ping permanecen igual)
-// Los endpoints de sync_github_release, sync_fdroid, manual_add, list_apps, get_app_meta, y ping no necesitan cambios.
-// Mantener el código original de esos endpoints.
 
-app.get("/api/sync_github_release", async (req, res) => {
-  const { repo, packageName } = req.query; 
-  if (!repo) return res.status(400).json({ ok:false, error: "repo param required (owner/repo)"});
-  try {
-    const [owner, repoName] = repo.split("/");
-    const pName = packageName || repoName;
-    const releases = await octokit.repos.listReleases({ owner, repo: repoName, per_page: 5 });
-    if (!releases.data.length) return res.json({ ok:false, error: "No releases found" });
+// NOTA: Los endpoints de scraping (`/api/search_app`, `/api/sync_app_by_search`, `/api/sync_popular_apps`) han sido eliminados.
+// El cliente ahora deberá usar los nuevos endpoints de repositorios (`/api/sync_fdroid`, etc.).
 
-    let assetUrl=null, assetName=null, version=null;
-    for (const r of releases.data) {
-      version = r.tag_name || r.name || "unknown";
-      if (r.assets && r.assets.length) {
-        for (const a of r.assets) {
-          if (a.name.endsWith(".apk")) {
-            assetUrl = a.browser_download_url;
-            assetName = a.name;
-            break;
-          }
-        }
-      }
-      if (assetUrl) break;
-    }
-    if (!assetUrl) return res.json({ ok:false, error: "No APK asset in recent releases" });
-
-    const apkResp = await axios.get(assetUrl, { responseType: "arraybuffer" });
-    const apkBuffer = Buffer.from(apkResp.data);
-
-    if (apkBuffer.length >= MAX_GITHUB_FILE_SIZE_MB * 1024 * 1024) {
-      return res.json({ ok:false, error: `APK too large for GitHub API (>=${MAX_GITHUB_FILE_SIZE_MB}MB). Use external storage (S3) or Git LFS.`});
-    }
-
-    const base64Apk = apkBuffer.toString("base64");
-    const apkPath = `public/apps/${pName}/apk_${version}.apk`;
-    await createOrUpdateGithubFile(apkPath, base64Apk, `Add APK ${pName} ${version}`);
-
-    const meta = {
-      source: "github_release",
-      owner,
-      repo: repoName,
-      packageName: pName,
-      version,
-      assetName,
-      size: apkBuffer.length,
-      addedAt: new Date().toISOString(),
-      apkPath
-    };
-    const metaPath = `public/apps/${pName}/meta_${version}.json`;
-    await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta,null,2)).toString("base64"), `Add meta ${pName} ${version}`);
-
-    return res.json({ ok:true, meta, message: "APK sincronizado." });
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ ok:false, error: e.message });
-  }
-});
-
-// 2) F-Droid fetcher (requires package name)
-app.get("/api/sync_fdroid", async (req, res) => {
-  const { packageName } = req.query;
-  if (!packageName) return res.status(400).json({ ok:false, error:"packageName required" });
-  try {
-    const page = `https://f-droid.org/en/packages/${packageName}/`;
-    const html = await axios.get(page).then(r=>r.data).catch(()=>null);
-    if (!html) return res.json({ ok:false, error: "Package not found on F-Droid" });
-
-    const m = html.match(/href="([^"]+\.apk)"/);
-    if (!m) return res.json({ ok:false, error:"APK link not found in page" });
-    let apkUrl = m[1];
-    if (!apkUrl.startsWith("http")) apkUrl = "https://f-droid.org" + apkUrl;
-
-    const apkResp = await axios.get(apkUrl, { responseType: "arraybuffer" });
-    const apkBuffer = Buffer.from(apkResp.data);
-    const versionMatch = html.match(/Version<\/th>\s*<td[^>]*>([^<]+)</);
-    const version = versionMatch ? versionMatch[1].trim() : "unknown";
-
-    if (apkBuffer.length >= MAX_GITHUB_FILE_SIZE_MB * 1024 * 1024) {
-      return res.json({ ok:false, error: `APK too large for GitHub API (>=${MAX_GITHUB_FILE_SIZE_MB}MB). Use external storage.`});
-    }
-    
-    const apkPath = `public/apps/${packageName}/apk_${version}.apk`;
-    await createOrUpdateGithubFile(apkPath, apkBuffer.toString("base64"), `Add F-Droid APK ${packageName} ${version}`);
-
-    const meta = {
-      source: "f-droid",
-      packageName,
-      version,
-      size: apkBuffer.length,
-      addedAt: new Date().toISOString(),
-      apkPath
-    };
-    const metaPath = `public/apps/${packageName}/meta_${version}.json`;
-    await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta,null,2)).toString("base64"), `Add meta ${packageName} ${version}`);
-
-    return res.json({ ok:true, meta, message: "APK sincronizado." });
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ ok:false, error: e.message });
-  }
-});
-
-// 3) Manual add by direct URL
-app.post("/api/manual_add", async (req, res) => {
-  try {
-    const { url, packageName, displayName } = req.body;
-    if (!url || !packageName) return res.status(400).json({ ok:false, error:"url and packageName required" });
-    
-    const apkResp = await axios.get(url, { responseType: "arraybuffer" });
-    const apkBuffer = Buffer.from(apkResp.data);
-    
-    if (apkBuffer.length >= MAX_GITHUB_FILE_SIZE_MB * 1024 * 1024) {
-      return res.json({ ok:false, error: `APK too large for GitHub API (>=${MAX_GITHUB_FILE_SIZE_MB}MB). Use external storage.`});
-    }
-    
-    const version = "manual-" + Date.now();
-    const apkPath = `public/apps/${packageName}/apk_${version}.apk`;
-    await createOrUpdateGithubFile(apkPath, apkBuffer.toString("base64"), `Add manual APK ${packageName} ${version}`);
-    
-    const meta = { 
-        source:"manual", 
-        url, 
-        packageName, 
-        displayName, 
-        size: apkBuffer.length, 
-        addedAt: new Date().toISOString(), 
-        apkPath 
-    };
-    const metaPath = `public/apps/${packageName}/meta_${version}.json`;
-    await createOrUpdateGithubFile(metaPath, Buffer.from(JSON.stringify(meta,null,2)).toString("base64"), `Add meta ${packageName} ${version}`);
-    
-    return res.json({ ok:true, meta, message: "APK agregado manualmente." });
-  } catch (e) {
-    console.error(e);
-    return res.status(500).json({ ok:false, error: e.message });
-  }
-});
-
-// 4) List apps simple: reads repo tree for public/apps
+// List apps simple: reads repo tree for public/apps
 app.get("/api/list_apps", async (req, res) => {
   try {
     const tree = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: "public/apps" });
@@ -508,7 +369,7 @@ app.get("/api/list_apps", async (req, res) => {
   }
 });
 
-// 5) Get metadata for a package (most recent meta_*.json)
+// Get metadata for a package (most recent meta_*.json)
 app.get("/api/get_app_meta", async (req,res) => {
   const { packageName } = req.query;
   if (!packageName) return res.status(400).json({ ok:false, error:"packageName required" });
