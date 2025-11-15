@@ -7,7 +7,8 @@ import axios from "axios";
 import FormData from "form-data"; 
 import gplay from "google-play-scraper"; 
 import * as cheerio from "cheerio"; 
-import https from "https"; // Necesario para el agente HTTPS
+import https from "https"; 
+import url from 'url';
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -180,7 +181,7 @@ async function syncAndSaveApk(packageName, version, displayName, source, apkBuff
 
 
 // ---------------------------------------------------
-// FUNCIÓN DE DESCARGA DE APK POR PROXY (apk-dl.com)
+// FUNCIÓN DE DESCARGA DE APK POR PROXY (apk-dl.com) - MEJORADA
 // ---------------------------------------------------
 
 /**
@@ -209,28 +210,33 @@ async function downloadApkFromProxy(packageName, appDetails) {
     // 2. Analizar el HTML para encontrar el enlace de descarga directa del APK
     const $ = cheerio.load(htmlResponse.data);
     
-    // 🚨 SCRAPING V3: Buscar cualquier enlace que termine en .apk en toda la página.
-    let foundDownloadLink = null;
-    
-    $('a').each((i, el) => {
-        const href = $(el).attr('href');
-        
-        // Condición: Busca la descarga directa del APK (.apk al final)
-        if (href && href.endsWith('.apk')) {
-            // Se le da prioridad a enlaces que contienen la URL del dominio de descarga directa
-            if (href.includes('dl.apk-dl.com')) {
-                finalApkUrl = href;
-                return false; // Salir del bucle para tomar el enlace de mayor prioridad
-            } else if (!foundDownloadLink) {
-                 // Si no encontramos el de alta prioridad, guardamos el primero que termine en .apk como respaldo
-                foundDownloadLink = href;
-            }
-        }
-    });
+    // 🚨 Búsqueda reforzada de enlaces de descarga
+    let downloadLinkElement = null;
 
-    if (finalApkUrl === null) {
-        // Si no encontramos el de alta prioridad, usamos el de respaldo (si existe)
-        finalApkUrl = foundDownloadLink;
+    // Primer intento: Botón de descarga principal (generalmente con clase 'download-btn' o similar)
+    downloadLinkElement = $('a.download-btn[href$=".apk"]').first();
+    
+    // Segundo intento: Cualquier enlace que termine en .apk, dando prioridad a dl.apk-dl.com
+    if (downloadLinkElement.length === 0) {
+        $('a[href]').each((i, el) => {
+            const href = $(el).attr('href');
+            if (href && href.endsWith('.apk')) {
+                // Priorizar enlaces que contengan el dominio de descarga directa
+                if (href.includes('dl.apk-dl.com')) {
+                    finalApkUrl = href;
+                    return false; // Salir del bucle
+                }
+                // Si no encontramos el de alta prioridad, guardamos el primero que termine en .apk como respaldo
+                if (!finalApkUrl) finalApkUrl = href;
+            }
+        });
+    } else {
+         finalApkUrl = downloadLinkElement.attr('href');
+    }
+    
+    // Si la búsqueda reforzada encontró un enlace, usarlo.
+    if (!finalApkUrl && downloadLinkElement.length > 0) {
+        finalApkUrl = downloadLinkElement.attr('href');
     }
 
 
@@ -297,7 +303,6 @@ async function downloadApkFromProxy(packageName, appDetails) {
 
 /**
  * Intenta descargar el APK usando el patrón de URL de APKPure.
- * Necesita los detalles de Google Play para obtener el hash de la versión.
  */
 async function downloadApkFromApkPure(packageName, appDetails) {
     if (!appDetails || !appDetails.appId || !appDetails.version) {
@@ -323,12 +328,11 @@ async function downloadApkFromApkPure(packageName, appDetails) {
     // 2. Analizar el HTML para encontrar el enlace de descarga.
     const $ = cheerio.load(htmlResponse.data);
     
-    // Buscar el botón de descarga. APKPure suele usar un selector específico.
-    // Usamos 'a.download-btn' que es un selector común para el botón de descarga principal.
+    // Buscar el botón de descarga principal.
     const downloadButton = $('a.download-btn'); 
     
     if (downloadButton.length === 0) {
-        // Intentamos con un selector más específico si el primero falla
+        // Intento de respaldo con un selector más genérico
         const specificButton = $('a[href*="/download?pkg="]'); 
         if (specificButton.length === 0) {
             throw new Error("No se encontró el botón de descarga en la página de APKPure.");
@@ -345,18 +349,17 @@ async function downloadApkFromApkPure(packageName, appDetails) {
 
     // El enlace suele ser relativo (ej. /download?pkg=...). Lo hacemos absoluto.
     if (downloadUrl.startsWith('/')) {
-        downloadUrl = new URL(initialUrl).origin + downloadUrl;
+        downloadUrl = new url.URL(initialUrl).origin + downloadUrl;
     }
     
     // 3. Descargar el APK binario desde el enlace final
     let apkResp;
     try {
-        // 🚨 CLAVE: Axios seguirá automáticamente las redirecciones (maxRedirects: 5)
-        // hasta llegar a la URL final del APK (como el ejemplo que diste).
+        // Axios seguirá automáticamente las redirecciones
         apkResp = await axios.get(downloadUrl, {
             responseType: "arraybuffer", // Obtener el binario
             headers: { 'User-Agent': AXIOS_USER_AGENT },
-            maxRedirects: 5 // Permitir varias redirecciones para obtener el enlace final .apk
+            maxRedirects: 5 
         });
 
         // VERIFICACIÓN CRÍTICA: Asegurarse de que el contenido es un APK
@@ -389,6 +392,92 @@ async function downloadApkFromApkPure(packageName, appDetails) {
     } catch (e) {
         console.error("Error durante la descarga final del APK desde APKPure:", e.message);
         throw new Error(`Fallo en la descarga final del APK desde APKPure. Causa: ${e.message}`);
+    }
+}
+
+// ---------------------------------------------------
+// FUNCIÓN DE DESCARGA DE APK POR APTOIDE (NUEVO MÉTODO)
+// ---------------------------------------------------
+
+/**
+ * Intenta descargar el APK usando APTOIDE.
+ */
+async function downloadApkFromAptoide(packageName, appDetails) {
+    if (!appDetails || !appDetails.appId || !appDetails.version) {
+        throw new Error("Se requiere metadatos válidos de Google Play (packageName y versión).");
+    }
+
+    const version = appDetails.version;
+    const initialUrl = `https://${packageName}.es.aptoide.com/app`; 
+    let downloadUrl = null;
+    let htmlResponse;
+
+    try {
+        // 1. Obtener la página de la aplicación en Aptoide
+        htmlResponse = await axios.get(initialUrl, {
+            responseType: "text",
+            headers: { 'User-Agent': AXIOS_USER_AGENT },
+        });
+    } catch (e) {
+        throw new Error(`Fallo en la solicitud inicial a Aptoide. Causa: ${e.message}`);
+    }
+
+    // 2. Analizar el HTML para encontrar el enlace directo del APK
+    const $ = cheerio.load(htmlResponse.data);
+    
+    // Buscar el enlace de descarga que tiene la URL directa del APK
+    const downloadLinkElement = $('a.download-btn.button_cta[href*=".apk"]'); 
+    
+    if (downloadLinkElement.length === 0) {
+        throw new Error("No se encontró el enlace de descarga directo (.apk) en la página de Aptoide.");
+    }
+    
+    downloadUrl = downloadLinkElement.attr('href');
+    
+    // Verificación de la URL extraída
+    if (!downloadUrl || !downloadUrl.endsWith('.apk')) {
+        throw new Error("El enlace de descarga de Aptoide no es válido o no termina en .apk.");
+    }
+
+    // 3. Descargar el APK binario
+    let apkResp;
+    try {
+        apkResp = await axios.get(downloadUrl, {
+            responseType: "arraybuffer", // Obtener el binario
+            headers: { 'User-Agent': AXIOS_USER_AGENT },
+            maxRedirects: 5 
+        });
+
+        // VERIFICACIÓN CRÍTICA: Asegurarse de que el contenido es un APK
+        const contentType = apkResp.headers['content-type'];
+        if (!contentType || (!contentType.includes('application/vnd.android.package-archive') && !contentType.includes('application/octet-stream'))) {
+             throw new Error(`Aptoide devolvió un tipo de contenido inesperado: ${contentType}`);
+        }
+        
+        const apkBuffer = Buffer.from(apkResp.data);
+
+        // VERIFICACIÓN DE TAMAÑO (Mínimo heurístico)
+        const MIN_APK_SIZE_BYTES = 5 * 1024 * 1024;
+        if (apkBuffer.length < MIN_APK_SIZE_BYTES) {
+            throw new Error(`El archivo de Aptoide es demasiado pequeño (${(apkBuffer.length / 1024 / 1024).toFixed(2)}MB). Probablemente es un error o HTML.`);
+        }
+
+
+        // 4. Sincronizar y guardar
+        const displayName = appDetails.title || packageName;
+        const metaExtra = {
+            iconUrl: appDetails.icon,
+            summary: appDetails.summary,
+            description: appDetails.descriptionHTML,
+            screenshots: appDetails.screenshots || [],
+            warnings: "ADVERTENCIA: Descarga de APK de fuente Proxy/Terceros (APTOIDE). ¡Verifique VirusTotal!"
+        };
+
+        return syncAndSaveApk(packageName, version, displayName, "apk_proxy_aptoide", apkBuffer, metaExtra);
+
+    } catch (e) {
+        console.error("Error durante la descarga final del APK desde Aptoide:", e.message);
+        throw new Error(`Fallo en la descarga final del APK desde Aptoide. Causa: ${e.message}`);
     }
 }
 
@@ -735,9 +824,19 @@ app.get("/api/search_and_sync", async (req, res) => {
         }
     }
     
+    // 6. Intento: Proxy de descarga de APK (APTOIDE)
+    if (!appInfo && gpDetails) {
+        try {
+            appInfo = await downloadApkFromAptoide(packageName, gpDetails);
+            errors.push(`Éxito: APK sincronizado desde Proxy de Descarga (APTOIDE).`);
+        } catch (e) {
+            errors.push(`Proxy de Descarga (APTOIDE) falló: ${e.message}`);
+        }
+    }
+    
     // ** FIN DE LA CASCADA DE DESCARGA DE APK **
 
-    // 6. Intento Final: Metadatos de Google Play (si no se sincronizó nada pero tenemos los detalles)
+    // 7. Intento Final: Metadatos de Google Play (si no se sincronizó nada pero tenemos los detalles)
     if (!appInfo && gpDetails) {
         const meta = formatGooglePlayMeta(gpDetails);
         appInfo = { meta, source: "Google Play Metadata Only" };
@@ -883,3 +982,4 @@ app.get("/api/ping", (req,res)=> res.json({ ok:true, ts: new Date().toISOString(
 /* --------- Start server --------- */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, ()=> console.log("App running on", PORT));
+
