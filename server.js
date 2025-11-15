@@ -6,12 +6,12 @@ import { Octokit } from "@octokit/rest";
 import axios from "axios";
 import FormData from "form-data"; 
 import gplay from "google-play-scraper"; 
+import cheerio from "cheerio"; // Se añade para el análisis de HTML
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
 
-// Mantener la solución de archivos estáticos, aunque no sea la fuente del problema,
-// puede ser útil para otros archivos como JSON.
+// Mantener la solución de archivos estáticos
 app.use(express.static('public'));
 
 /* --------- Configs & Global Constants --------- */
@@ -142,7 +142,6 @@ async function syncAndSaveApk(packageName, version, displayName, source, apkBuff
     await createOrUpdateGithubFile(apkPath, base64Apk, `Sincronizar APK: ${packageName} v${version} (${source})`);
 
     // CONSTRUIR EL ENLACE DE DESCARGA DIRECTO
-    // NOTA: Este enlace ahora será manejado por el nuevo endpoint de Express (ver abajo).
     const downloadUrl = `${BASE_URL}/${apkPath}`; 
 
     // 3. Crear y guardar Metadatos
@@ -174,57 +173,91 @@ async function syncAndSaveApk(packageName, version, displayName, source, apkBuff
 
 
 // ---------------------------------------------------
-// FUNCIÓN DE DESCARGA DE APK POR PROXY (SIN CAMBIOS)
+// FUNCIÓN DE DESCARGA DE APK POR PROXY (MODIFICADA)
 // ---------------------------------------------------
 
 /**
  * Intenta descargar el APK usando un servicio de proxy de descarga (ej. basándose en apk-dl.com).
- * Requiere obtener metadatos de Google Play primero.
+ * Se ha añadido lógica para verificar que la respuesta sea un APK y no un HTML.
  */
 async function downloadApkFromProxy(packageName, appDetails) {
     if (!appDetails || !appDetails.appId) {
         throw new Error("Se requiere metadatos válidos de Google Play.");
     }
     
-    // 1. Determinar el mejor endpoint de descarga conocido (simulación de servicio proxy)
-    // Para simplificar y enfocarnos en el error 403, vamos a generar una URL conocida
-    // de un servicio proxy popular y DEBE usar el User-Agent
-    const downloadUrl = `https://d.apk-dl.com/details?id=${packageName}`; 
-    
-    // 2. Intentar obtener el APK
-    let apkResp;
+    const initialUrl = `https://d.apk-dl.com/details?id=${packageName}`; 
+    let finalApkUrl = null;
+    let htmlResponse;
+
     try {
-        // La clave para evitar el 403 es imitar un navegador y obtener la respuesta en buffer
-        apkResp = await axios.get(downloadUrl, { 
-            responseType: "arraybuffer", 
+        // 1. Obtener la página HTML del proxy (no el APK directamente)
+        htmlResponse = await axios.get(initialUrl, { 
+            responseType: "text", 
             headers: { 'User-Agent': AXIOS_USER_AGENT } 
         });
     } catch (e) {
-        // Si la URL principal falla, intentar una alternativa (a veces usan un prefijo diferente)
-        const altDownloadUrl = `https://m.apk-dl.com/details?id=${packageName}`;
-        apkResp = await axios.get(altDownloadUrl, { 
-            responseType: "arraybuffer", 
-            headers: { 'User-Agent': AXIOS_USER_AGENT } 
-        });
+        throw new Error(`Fallo en la solicitud inicial al proxy: ${e.message}`);
     }
 
-    const apkBuffer = Buffer.from(apkResp.data);
+    // 2. Analizar el HTML para encontrar el enlace de descarga directa del APK
+    const $ = cheerio.load(htmlResponse.data);
+    
+    // Busca el botón de descarga o el enlace real al APK
+    const downloadButton = $('a.download-btn'); 
+    
+    if (downloadButton.length) {
+        finalApkUrl = downloadButton.attr('href');
+    } else {
+        throw new Error("No se pudo encontrar el enlace de descarga directo en la página proxy. Posiblemente requiere Captcha o la app no está disponible.");
+    }
 
-    // 3. Obtener versión y nombre de los metadatos de Google Play
-    const version = appDetails.version || 'unknown';
-    const displayName = appDetails.title || packageName;
+    if (!finalApkUrl || !finalApkUrl.endsWith('.apk')) {
+        throw new Error("Enlace de descarga inválido encontrado o es una redirección no deseada.");
+    }
 
-    // 4. Preparar metadatos extendidos
-    const metaExtra = {
-        iconUrl: appDetails.icon,
-        summary: appDetails.summary,
-        description: appDetails.descriptionHTML,
-        screenshots: appDetails.screenshots || [],
-        warnings: "ADVERTENCIA: Descarga de APK de fuente Proxy/Terceros. ¡Verifique VirusTotal!"
-    };
+    // 3. Descargar el APK binario desde el enlace final
+    let apkResp;
+    try {
+        apkResp = await axios.get(finalApkUrl, {
+            responseType: "arraybuffer",
+            headers: { 'User-Agent': AXIOS_USER_AGENT }
+        });
 
-    // 5. Sincronizar y guardar
-    return syncAndSaveApk(packageName, version, displayName, "apk_proxy_dl", apkBuffer, metaExtra);
+        // 🚨 VERIFICACIÓN CRÍTICA: Asegurarse de que el Content-Type sea un APK (no un HTML/Error)
+        const contentType = apkResp.headers['content-type'];
+        if (!contentType || !contentType.includes('application/vnd.android.package-archive')) {
+             throw new Error(`El proxy devolvió un tipo de contenido inesperado: ${contentType}`);
+        }
+        
+        const apkBuffer = Buffer.from(apkResp.data);
+
+        // 🚨 VERIFICACIÓN DE TAMAÑO: Un APK real de WhatsApp debe tener más de ~10MB.
+        const MIN_APK_SIZE_BYTES = 5 * 1024 * 1024; // 5MB mínimo heurístico
+        if (apkBuffer.length < MIN_APK_SIZE_BYTES) {
+            throw new Error(`El archivo descargado es demasiado pequeño (${(apkBuffer.length / 1024 / 1024).toFixed(2)}MB). Probablemente es un error o HTML.`);
+        }
+
+
+        // 4. Obtener versión y nombre de los metadatos de Google Play
+        const version = appDetails.version || 'unknown';
+        const displayName = appDetails.title || packageName;
+
+        // 5. Preparar metadatos extendidos
+        const metaExtra = {
+            iconUrl: appDetails.icon,
+            summary: appDetails.summary,
+            description: appDetails.descriptionHTML,
+            screenshots: appDetails.screenshots || [],
+            warnings: "ADVERTENCIA: Descarga de APK de fuente Proxy/Terceros. ¡Verifique VirusTotal!"
+        };
+
+        // 6. Sincronizar y guardar
+        return syncAndSaveApk(packageName, version, displayName, "apk_proxy_dl", apkBuffer, metaExtra);
+
+    } catch (e) {
+        console.error("Error durante la descarga final del APK desde el proxy:", e.message);
+        throw new Error(`Fallo en la descarga final del APK. Causa: ${e.message}`);
+    }
 }
 
 
@@ -277,7 +310,7 @@ function formatGooglePlayMeta(appDetails) {
 
 
 // ---------------------------------------------------
-// OTRAS FUNCIONES (MANTENIDAS)
+// OTRAS FUNCIONES (SIN CAMBIOS)
 // ---------------------------------------------------
 async function findPackageNameByAppName(appName, source) {
     const metaIndexUrl = source === 'fdroid' 
@@ -448,7 +481,7 @@ function syncPopularAppsInBackground() {
 // ENDPOINTS
 // ---------------------------------------------------
 
-// 🚨 NUEVO ENDPOINT: Manejar la descarga del APK directamente desde GitHub
+// 🚨 ENDPOINT: Manejar la descarga del APK directamente desde GitHub (Sin Cambios)
 app.get("/public/apps/:packageName/apk_:version.apk", async (req, res) => {
     const { packageName, version } = req.params;
     const pathInRepo = `public/apps/${packageName}/apk_${version}.apk`;
@@ -470,9 +503,6 @@ app.get("/public/apps/:packageName/apk_:version.apk", async (req, res) => {
         res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
         
         // 3. Enviar el contenido del archivo (que viene como buffer/string)
-        // Ya que solicitamos el formato "raw", el 'file.data' es el contenido binario.
-        // Si hay problemas, podría necesitar Buffer.from(file.data, 'binary') o similar, 
-        // pero `mediaType: { format: "raw" }` generalmente lo maneja Express bien.
         res.send(file.data);
 
     } catch (e) {
@@ -483,7 +513,6 @@ app.get("/public/apps/:packageName/apk_:version.apk", async (req, res) => {
         return res.status(500).send("Error interno al intentar descargar el APK.");
     }
 });
-// ---------------------------------------------------
 
 
 /* ---------------------------------
@@ -558,6 +587,7 @@ app.get("/api/search_and_sync", async (req, res) => {
     // 4. Intento: Proxy de descarga de APK (Nuevo Fallback Comercial)
     if (!appInfo && gpDetails) {
         try {
+            // Se llama a la función corregida
             appInfo = await downloadApkFromProxy(packageName, gpDetails); 
             errors.push(`Éxito: APK sincronizado desde Proxy de Descarga.`);
         } catch (e) {
