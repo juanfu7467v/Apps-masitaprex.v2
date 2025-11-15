@@ -6,7 +6,8 @@ import { Octokit } from "@octokit/rest";
 import axios from "axios";
 import FormData from "form-data"; 
 import gplay from "google-play-scraper"; 
-import * as cheerio from "cheerio"; // 🚨 CORRECCIÓN: Usar import * as
+import * as cheerio from "cheerio"; 
+import https from "https"; // 🚨 IMPORTANTE: Necesario para el agente HTTPS
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -25,6 +26,13 @@ const AXIOS_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 
 // CONSTANTE: URL base para la descarga (Usada para el link directo)
 const BASE_URL = 'https://apps-masitaprex-v2.fly.dev';
+
+// 🚨 AGENTE HTTPS PARA IGNORAR CERTIFICADOS AUTO-FIRMADOS
+// Esto es necesario para acceder a sitios como apk-dl.com que pueden usar certificados problemáticos
+const httpsAgent = new https.Agent({
+    rejectUnauthorized: false, 
+});
+
 
 // ----------------------------------------------------
 // FUNCIÓN HELPER: Verificación con VirusTotal (SIN CAMBIOS)
@@ -173,12 +181,12 @@ async function syncAndSaveApk(packageName, version, displayName, source, apkBuff
 
 
 // ---------------------------------------------------
-// FUNCIÓN DE DESCARGA DE APK POR PROXY (ACTUALIZADA)
+// FUNCIÓN DE DESCARGA DE APK POR PROXY (ACTUALIZADA con AGENTE)
 // ---------------------------------------------------
 
 /**
  * Intenta descargar el APK usando un servicio de proxy de descarga (ej. basándose en apk-dl.com).
- * Se ha añadido lógica para verificar que la respuesta sea un APK y no un HTML.
+ * Se ha añadido la configuración del agente para ignorar el error de certificado.
  */
 async function downloadApkFromProxy(packageName, appDetails) {
     if (!appDetails || !appDetails.appId) {
@@ -190,17 +198,17 @@ async function downloadApkFromProxy(packageName, appDetails) {
     let htmlResponse;
 
     try {
-        // 1. Obtener la página HTML del proxy (no el APK directamente)
+        // 1. Obtener la página HTML del proxy (con el agente de ignorar SSL)
         htmlResponse = await axios.get(initialUrl, { 
             responseType: "text", 
-            headers: { 'User-Agent': AXIOS_USER_AGENT } 
+            headers: { 'User-Agent': AXIOS_USER_AGENT },
+            httpsAgent: httpsAgent, // 🚨 CORRECCIÓN: Usar el agente para ignorar el certificado
         });
     } catch (e) {
         throw new Error(`Fallo en la solicitud inicial al proxy: ${e.message}`);
     }
 
     // 2. Analizar el HTML para encontrar el enlace de descarga directa del APK
-    // 🚨 USO CORREGIDO DE CHEERIO:
     const $ = cheerio.load(htmlResponse.data);
     
     // Busca el botón de descarga o el enlace real al APK
@@ -216,15 +224,16 @@ async function downloadApkFromProxy(packageName, appDetails) {
         throw new Error("Enlace de descarga inválido encontrado o es una redirección no deseada.");
     }
 
-    // 3. Descargar el APK binario desde el enlace final
+    // 3. Descargar el APK binario desde el enlace final (con el agente de ignorar SSL)
     let apkResp;
     try {
         apkResp = await axios.get(finalApkUrl, {
             responseType: "arraybuffer",
-            headers: { 'User-Agent': AXIOS_USER_AGENT }
+            headers: { 'User-Agent': AXIOS_USER_AGENT },
+            httpsAgent: httpsAgent, // 🚨 CORRECCIÓN: Usar el agente para ignorar el certificado
         });
 
-        // 🚨 VERIFICACIÓN CRÍTICA: Asegurarse de que el Content-Type sea un APK (no un HTML/Error)
+        // VERIFICACIÓN CRÍTICA
         const contentType = apkResp.headers['content-type'];
         if (!contentType || !contentType.includes('application/vnd.android.package-archive')) {
              throw new Error(`El proxy devolvió un tipo de contenido inesperado: ${contentType}`);
@@ -232,7 +241,7 @@ async function downloadApkFromProxy(packageName, appDetails) {
         
         const apkBuffer = Buffer.from(apkResp.data);
 
-        // 🚨 VERIFICACIÓN DE TAMAÑO: Un APK real debe ser grande (ej. > 5MB).
+        // VERIFICACIÓN DE TAMAÑO
         const MIN_APK_SIZE_BYTES = 5 * 1024 * 1024; // 5MB mínimo heurístico
         if (apkBuffer.length < MIN_APK_SIZE_BYTES) {
             throw new Error(`El archivo descargado es demasiado pequeño (${(apkBuffer.length / 1024 / 1024).toFixed(2)}MB). Probablemente es un error o HTML.`);
@@ -372,6 +381,7 @@ async function syncFromRepo(packageName, source) {
         console.warn(`No se pudieron obtener metadatos extendidos para ${packageName} de ${source}.`);
     }
     
+    // Aquí no necesitamos el agente SSL porque f-droid.org y izzysoft.de tienen certificados válidos.
     const apkResp = await axios.get(downloadUrl, { responseType: "arraybuffer", headers: { 'User-Agent': AXIOS_USER_AGENT } });
     const apkBuffer = Buffer.from(apkResp.data);
 
@@ -588,7 +598,7 @@ app.get("/api/search_and_sync", async (req, res) => {
     // 4. Intento: Proxy de descarga de APK (Nuevo Fallback Comercial)
     if (!appInfo && gpDetails) {
         try {
-            // Se llama a la función corregida
+            // Se llama a la función corregida (ahora ignora el error de certificado)
             appInfo = await downloadApkFromProxy(packageName, gpDetails); 
             errors.push(`Éxito: APK sincronizado desde Proxy de Descarga.`);
         } catch (e) {
