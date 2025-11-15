@@ -180,7 +180,7 @@ async function syncAndSaveApk(packageName, version, displayName, source, apkBuff
 
 
 // ---------------------------------------------------
-// FUNCIÓN DE DESCARGA DE APK POR PROXY (ACTUALIZADA con AGENTE y NUEVO SCRAPING)
+// FUNCIÓN DE DESCARGA DE APK POR PROXY (ACTUALIZADA con AGENTE y NUEVO SCRAPING V2)
 // ---------------------------------------------------
 
 /**
@@ -209,16 +209,15 @@ async function downloadApkFromProxy(packageName, appDetails) {
     // 2. Analizar el HTML para encontrar el enlace de descarga directa del APK
     const $ = cheerio.load(htmlResponse.data);
     
-    // 🚨 CORRECCIÓN DE SCRAPING: Buscar cualquier enlace que contenga el texto "download" y termine en .apk
+    // 🚨 CORRECCIÓN DE SCRAPING V2: Buscar cualquier enlace que contenga la subcadena "download.apk"
     let foundDownloadLink = null;
     
-    // Intento 1: Buscar enlaces de descarga que contengan el texto
+    // Intento 1: Buscar enlaces que contengan la URL de descarga directa
     $('a').each((i, el) => {
         const href = $(el).attr('href');
-        const text = $(el).text().toLowerCase();
         
-        // Condición: debe ser un APK directo y el texto del botón debe ser relevante
-        if (href && href.endsWith('.apk') && text.includes('download')) {
+        // Condición: debe ser una URL que claramente contiene el archivo APK de descarga
+        if (href && (href.includes('download.apk') || href.includes('dl.apk-dl.com'))) {
             foundDownloadLink = href;
             return false; // Salir del bucle each
         }
@@ -227,7 +226,7 @@ async function downloadApkFromProxy(packageName, appDetails) {
     if (foundDownloadLink) {
         finalApkUrl = foundDownloadLink;
     } else {
-        // Intento 2: Buscar el botón por la clase anterior como fallback (en caso de que la app no fuera Messenger)
+        // Intento 2: Búsqueda genérica por clase como fallback (menos probable, pero se mantiene)
         const fallbackButton = $('a.download-btn'); 
         if (fallbackButton.length) {
             finalApkUrl = fallbackButton.attr('href');
