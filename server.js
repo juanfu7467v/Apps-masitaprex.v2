@@ -6,7 +6,7 @@ import { Octokit } from "@octokit/rest";
 import axios from "axios";
 import FormData from "form-data"; 
 import gplay from "google-play-scraper"; 
-import cheerio from "cheerio"; // Se añade para el análisis de HTML
+import * as cheerio from "cheerio"; // 🚨 CORRECCIÓN: Usar import * as
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -173,7 +173,7 @@ async function syncAndSaveApk(packageName, version, displayName, source, apkBuff
 
 
 // ---------------------------------------------------
-// FUNCIÓN DE DESCARGA DE APK POR PROXY (MODIFICADA)
+// FUNCIÓN DE DESCARGA DE APK POR PROXY (ACTUALIZADA)
 // ---------------------------------------------------
 
 /**
@@ -200,6 +200,7 @@ async function downloadApkFromProxy(packageName, appDetails) {
     }
 
     // 2. Analizar el HTML para encontrar el enlace de descarga directa del APK
+    // 🚨 USO CORREGIDO DE CHEERIO:
     const $ = cheerio.load(htmlResponse.data);
     
     // Busca el botón de descarga o el enlace real al APK
@@ -231,7 +232,7 @@ async function downloadApkFromProxy(packageName, appDetails) {
         
         const apkBuffer = Buffer.from(apkResp.data);
 
-        // 🚨 VERIFICACIÓN DE TAMAÑO: Un APK real de WhatsApp debe tener más de ~10MB.
+        // 🚨 VERIFICACIÓN DE TAMAÑO: Un APK real debe ser grande (ej. > 5MB).
         const MIN_APK_SIZE_BYTES = 5 * 1024 * 1024; // 5MB mínimo heurístico
         if (apkBuffer.length < MIN_APK_SIZE_BYTES) {
             throw new Error(`El archivo descargado es demasiado pequeño (${(apkBuffer.length / 1024 / 1024).toFixed(2)}MB). Probablemente es un error o HTML.`);
