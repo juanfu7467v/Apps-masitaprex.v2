@@ -181,6 +181,7 @@ async function syncAndSaveApk(packageName, version, displayName, source, apkBuff
 
 // ---------------------------------------------------
 // FUNCIÓN DE DESCARGA DE APK POR PROXY (ACTUALIZADA: Scraping V3)
+// Se mantiene pero ya no será el último intento antes de APKPure.
 // ---------------------------------------------------
 
 /**
@@ -209,7 +210,7 @@ async function downloadApkFromProxy(packageName, appDetails) {
     // 2. Analizar el HTML para encontrar el enlace de descarga directa del APK
     const $ = cheerio.load(htmlResponse.data);
     
-    // 🚨 CORRECCIÓN DE SCRAPING V3: Buscar cualquier enlace que termine en .apk en toda la página.
+    // 🚨 SCRAPING V3: Buscar cualquier enlace que termine en .apk en toda la página.
     let foundDownloadLink = null;
     
     $('a').each((i, el) => {
@@ -279,15 +280,109 @@ async function downloadApkFromProxy(packageName, appDetails) {
             summary: appDetails.summary,
             description: appDetails.descriptionHTML,
             screenshots: appDetails.screenshots || [],
-            warnings: "ADVERTENCIA: Descarga de APK de fuente Proxy/Terceros. ¡Verifique VirusTotal!"
+            warnings: "ADVERTENCIA: Descarga de APK de fuente Proxy/Terceros (apk-dl.com). ¡Verifique VirusTotal!"
         };
 
         // 6. Sincronizar y guardar
         return syncAndSaveApk(packageName, version, displayName, "apk_proxy_dl", apkBuffer, metaExtra);
 
     } catch (e) {
-        console.error("Error durante la descarga final del APK desde el proxy:", e.message);
-        throw new Error(`Fallo en la descarga final del APK. Causa: ${e.message}`);
+        console.error("Error durante la descarga final del APK desde el proxy (apk-dl):", e.message);
+        throw new Error(`Fallo en la descarga final del APK desde apk-dl. Causa: ${e.message}`);
+    }
+}
+
+// ---------------------------------------------------
+// NUEVA FUNCIÓN DE DESCARGA DE APK POR APKPURE (Alternativa V4)
+// ---------------------------------------------------
+
+/**
+ * Intenta descargar el APK usando el patrón de URL de APKPure.
+ * Necesita los detalles de Google Play para obtener el hash de la versión.
+ */
+async function downloadApkFromApkPure(packageName, appDetails) {
+    if (!appDetails || !appDetails.appId || !appDetails.version) {
+        throw new Error("Se requiere metadatos válidos de Google Play (packageName y versión).");
+    }
+
+    const version = appDetails.version;
+    const initialUrl = `https://apkpure.net/es/${packageName}`;
+    let downloadUrl = null;
+    let htmlResponse;
+
+    try {
+        // 1. Obtener la página del APK en APKPure
+        htmlResponse = await axios.get(initialUrl, {
+            responseType: "text",
+            headers: { 'User-Agent': AXIOS_USER_AGENT },
+        });
+    } catch (e) {
+        throw new Error(`Fallo en la solicitud inicial a APKPure. Causa: ${e.message}`);
+    }
+
+    // 2. Analizar el HTML para encontrar el enlace de descarga directa.
+    const $ = cheerio.load(htmlResponse.data);
+    
+    // Buscar el botón de descarga. APKPure suele tener un botón "Download APK"
+    // con la URL apuntando a su servidor de descarga.
+    const downloadButton = $('a.download-btn');
+    
+    if (downloadButton.length === 0) {
+        throw new Error("No se encontró el botón de descarga en la página de APKPure.");
+    }
+    
+    // El atributo href del botón suele ser la URL de descarga.
+    downloadUrl = downloadButton.attr('href');
+
+    if (!downloadUrl || !downloadUrl.includes('/download')) {
+        throw new Error("El enlace de descarga de APKPure no es válido o no se pudo extraer.");
+    }
+
+    // El enlace puede ser relativo o apuntar a una URL que redirige. Usaremos la URL encontrada.
+    if (downloadUrl.startsWith('/')) {
+        downloadUrl = new URL(initialUrl).origin + downloadUrl;
+    }
+    
+    // 3. Descargar el APK binario desde el enlace final
+    let apkResp;
+    try {
+        // APKPure usa redirecciones, necesitamos manejar la respuesta final.
+        apkResp = await axios.get(downloadUrl, {
+            responseType: "arraybuffer",
+            headers: { 'User-Agent': AXIOS_USER_AGENT },
+            maxRedirects: 5 // Permitir varias redirecciones
+        });
+
+        // VERIFICACIÓN CRÍTICA
+        const contentType = apkResp.headers['content-type'];
+        if (!contentType || (!contentType.includes('application/vnd.android.package-archive') && !contentType.includes('application/octet-stream'))) {
+             throw new Error(`APKPure devolvió un tipo de contenido inesperado: ${contentType}`);
+        }
+        
+        const apkBuffer = Buffer.from(apkResp.data);
+
+        // VERIFICACIÓN DE TAMAÑO (Mínimo heurístico)
+        const MIN_APK_SIZE_BYTES = 5 * 1024 * 1024;
+        if (apkBuffer.length < MIN_APK_SIZE_BYTES) {
+            throw new Error(`El archivo de APKPure es demasiado pequeño (${(apkBuffer.length / 1024 / 1024).toFixed(2)}MB). Probablemente es un error o HTML.`);
+        }
+
+
+        // 4. Sincronizar y guardar
+        const displayName = appDetails.title || packageName;
+        const metaExtra = {
+            iconUrl: appDetails.icon,
+            summary: appDetails.summary,
+            description: appDetails.descriptionHTML,
+            screenshots: appDetails.screenshots || [],
+            warnings: "ADVERTENCIA: Descarga de APK de fuente Proxy/Terceros (APKPure). ¡Verifique VirusTotal!"
+        };
+
+        return syncAndSaveApk(packageName, version, displayName, "apk_proxy_apkpure", apkBuffer, metaExtra);
+
+    } catch (e) {
+        console.error("Error durante la descarga final del APK desde APKPure:", e.message);
+        throw new Error(`Fallo en la descarga final del APK desde APKPure. Causa: ${e.message}`);
     }
 }
 
@@ -548,7 +643,7 @@ app.get("/public/apps/:packageName/apk_:version.apk", async (req, res) => {
 
 
 /* ---------------------------------
-   1. 🔍 ENDPOINT DE BÚSQUEDA Y SINCRONIZACIÓN (SIN CAMBIOS)
+   1. 🔍 ENDPOINT DE BÚSQUEDA Y SINCRONIZACIÓN (MODIFICADO para incluir APKPure)
 ------------------------------------*/
 app.get("/api/search_and_sync", async (req, res) => {
     let { q } = req.query; 
@@ -616,20 +711,29 @@ app.get("/api/search_and_sync", async (req, res) => {
         }
     }
     
-    // 4. Intento: Proxy de descarga de APK (Nuevo Fallback Comercial)
+    // 4. Intento: Proxy de descarga de APK (apk-dl.com)
     if (!appInfo && gpDetails) {
         try {
-            // Se llama a la función corregida (ahora ignora el error de certificado y tiene mejor scraping)
             appInfo = await downloadApkFromProxy(packageName, gpDetails); 
-            errors.push(`Éxito: APK sincronizado desde Proxy de Descarga.`);
+            errors.push(`Éxito: APK sincronizado desde Proxy de Descarga (apk-dl.com).`);
         } catch (e) {
-            errors.push(`Proxy de Descarga falló: ${e.message}`);
+            errors.push(`Proxy de Descarga (apk-dl.com) falló: ${e.message}`);
+        }
+    }
+
+    // 5. Intento: Proxy de descarga de APK (APKPure) 🚨 NUEVO INTENTO 🚨
+    if (!appInfo && gpDetails) {
+        try {
+            appInfo = await downloadApkFromApkPure(packageName, gpDetails);
+            errors.push(`Éxito: APK sincronizado desde Proxy de Descarga (APKPure).`);
+        } catch (e) {
+            errors.push(`Proxy de Descarga (APKPure) falló: ${e.message}`);
         }
     }
     
     // ** FIN DE LA CASCADA DE DESCARGA DE APK **
 
-    // 5. Intento Final: Metadatos de Google Play (si no se sincronizó nada pero tenemos los detalles)
+    // 6. Intento Final: Metadatos de Google Play (si no se sincronizó nada pero tenemos los detalles)
     if (!appInfo && gpDetails) {
         const meta = formatGooglePlayMeta(gpDetails);
         appInfo = { meta, source: "Google Play Metadata Only" };
