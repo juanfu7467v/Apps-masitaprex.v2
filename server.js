@@ -305,7 +305,8 @@ async function downloadApkFromApkPure(packageName, appDetails) {
     }
 
     const version = appDetails.version;
-    const initialUrl = `https://apkpure.net/es/${packageName}`;
+    // URL base de la página de la aplicación en APKPure
+    const initialUrl = `https://apkpure.net/es/${packageName}`; 
     let downloadUrl = null;
     let htmlResponse;
 
@@ -319,25 +320,30 @@ async function downloadApkFromApkPure(packageName, appDetails) {
         throw new Error(`Fallo en la solicitud inicial a APKPure. Causa: ${e.message}`);
     }
 
-    // 2. Analizar el HTML para encontrar el enlace de descarga directa.
+    // 2. Analizar el HTML para encontrar el enlace de descarga.
     const $ = cheerio.load(htmlResponse.data);
     
-    // Buscar el botón de descarga. APKPure suele tener un botón "Download APK"
-    // con la URL apuntando a su servidor de descarga.
-    const downloadButton = $('a.download-btn');
+    // Buscar el botón de descarga. APKPure suele usar un selector específico.
+    // Usamos 'a.download-btn' que es un selector común para el botón de descarga principal.
+    const downloadButton = $('a.download-btn'); 
     
     if (downloadButton.length === 0) {
-        throw new Error("No se encontró el botón de descarga en la página de APKPure.");
+        // Intentamos con un selector más específico si el primero falla
+        const specificButton = $('a[href*="/download?pkg="]'); 
+        if (specificButton.length === 0) {
+            throw new Error("No se encontró el botón de descarga en la página de APKPure.");
+        }
+        downloadUrl = specificButton.attr('href');
+    } else {
+        downloadUrl = downloadButton.attr('href');
     }
     
-    // El atributo href del botón suele ser la URL de descarga.
-    downloadUrl = downloadButton.attr('href');
-
+    // Verificación de la URL extraída
     if (!downloadUrl || !downloadUrl.includes('/download')) {
         throw new Error("El enlace de descarga de APKPure no es válido o no se pudo extraer.");
     }
 
-    // El enlace puede ser relativo o apuntar a una URL que redirige. Usaremos la URL encontrada.
+    // El enlace suele ser relativo (ej. /download?pkg=...). Lo hacemos absoluto.
     if (downloadUrl.startsWith('/')) {
         downloadUrl = new URL(initialUrl).origin + downloadUrl;
     }
@@ -345,14 +351,15 @@ async function downloadApkFromApkPure(packageName, appDetails) {
     // 3. Descargar el APK binario desde el enlace final
     let apkResp;
     try {
-        // APKPure usa redirecciones, necesitamos manejar la respuesta final.
+        // 🚨 CLAVE: Axios seguirá automáticamente las redirecciones (maxRedirects: 5)
+        // hasta llegar a la URL final del APK (como el ejemplo que diste).
         apkResp = await axios.get(downloadUrl, {
-            responseType: "arraybuffer",
+            responseType: "arraybuffer", // Obtener el binario
             headers: { 'User-Agent': AXIOS_USER_AGENT },
-            maxRedirects: 5 // Permitir varias redirecciones
+            maxRedirects: 5 // Permitir varias redirecciones para obtener el enlace final .apk
         });
 
-        // VERIFICACIÓN CRÍTICA
+        // VERIFICACIÓN CRÍTICA: Asegurarse de que el contenido es un APK
         const contentType = apkResp.headers['content-type'];
         if (!contentType || (!contentType.includes('application/vnd.android.package-archive') && !contentType.includes('application/octet-stream'))) {
              throw new Error(`APKPure devolvió un tipo de contenido inesperado: ${contentType}`);
