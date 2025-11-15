@@ -25,7 +25,7 @@ const VIRUSTOTAL_API_KEY = process.env.VIRUSTOTAL_API_KEY;
 const AXIOS_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
 // CONSTANTE: URL base para la descarga (Usada para el link directo)
-const BASE_URL = 'https://apps-masitaprex-v2.fly.dev';
+const BASE_URL = process.env.BASE_URL || 'https://apps-masitaprex-v2.fly.dev'; // Usar variable de entorno si está disponible
 
 // AGENTE HTTPS PARA IGNORAR CERTIFICADOS AUTO-FIRMADOS
 const httpsAgent = new https.Agent({
@@ -34,7 +34,7 @@ const httpsAgent = new https.Agent({
 
 
 // ----------------------------------------------------
-// FUNCIÓN HELPER: Verificación con VirusTotal (SIN CAMBIOS)
+// FUNCIÓN HELPER: Verificación con VirusTotal
 // ----------------------------------------------------
 /**
  * Envía un archivo a VirusTotal para escanear y espera el resultado.
@@ -97,7 +97,7 @@ async function scanWithVirusTotal(apkBuffer, fileName) {
     }
 }
 
-/* --------- Helpers GitHub (SIN CAMBIOS) --------- */
+/* --------- Helpers GitHub --------- */
 async function createOrUpdateGithubFile(pathInRepo, contentBase64, message) {
   try {
     const get = await octokit.repos.getContent({
@@ -128,7 +128,7 @@ async function createOrUpdateGithubFile(pathInRepo, contentBase64, message) {
 }
 
 // ---------------------------------------------------
-// FUNCIÓN CENTRAL DE SINCRONIZACIÓN DE APK (SIN CAMBIOS)
+// FUNCIÓN CENTRAL DE SINCRONIZACIÓN DE APK
 // ---------------------------------------------------
 async function syncAndSaveApk(packageName, version, displayName, source, apkBuffer, metaExtra = {}) {
     if (apkBuffer.length >= MAX_GITHUB_FILE_SIZE_MB * 1024 * 1024) {
@@ -180,8 +180,7 @@ async function syncAndSaveApk(packageName, version, displayName, source, apkBuff
 
 
 // ---------------------------------------------------
-// FUNCIÓN DE DESCARGA DE APK POR PROXY (ACTUALIZADA: Scraping V3)
-// Se mantiene pero ya no será el último intento antes de APKPure.
+// FUNCIÓN DE DESCARGA DE APK POR PROXY (apk-dl.com)
 // ---------------------------------------------------
 
 /**
@@ -293,7 +292,7 @@ async function downloadApkFromProxy(packageName, appDetails) {
 }
 
 // ---------------------------------------------------
-// NUEVA FUNCIÓN DE DESCARGA DE APK POR APKPURE (Alternativa V4)
+// FUNCIÓN DE DESCARGA DE APK POR APKPURE
 // ---------------------------------------------------
 
 /**
@@ -388,7 +387,7 @@ async function downloadApkFromApkPure(packageName, appDetails) {
 
 
 // ---------------------------------------------------
-// FUNCIONES DE BÚSQUEDA Y METADATOS DE GOOGLE PLAY (SIN CAMBIOS)
+// FUNCIONES DE BÚSQUEDA Y METADATOS DE GOOGLE PLAY
 // ---------------------------------------------------
 async function searchGooglePlay(appName) {
     try {
@@ -436,7 +435,7 @@ function formatGooglePlayMeta(appDetails) {
 
 
 // ---------------------------------------------------
-// OTRAS FUNCIONES (SIN CAMBIOS)
+// OTRAS FUNCIONES (F-Droid, IzzyOnDroid, GitHub Release)
 // ---------------------------------------------------
 async function findPackageNameByAppName(appName, source) {
     const metaIndexUrl = source === 'fdroid' 
@@ -544,8 +543,6 @@ async function syncFromGitHubRelease(repo, packageName) {
     return syncAndSaveApk(pName, version, pName, "github_release", apkBuffer, metaExtra);
 }
 
-// ... (El resto de las funciones: syncPopularAppsInBackground, /api/sync_*, /api/list_apps, etc. no han sido modificadas) ...
-
 const POPULAR_APPS_FDROID = [
     { name: "NewPipe", package: "org.schabi.newpipe" },
     { name: "F-Droid", package: "org.fdroid.fdroid" },
@@ -608,7 +605,7 @@ function syncPopularAppsInBackground() {
 // ENDPOINTS
 // ---------------------------------------------------
 
-// ENDPOINT: Manejar la descarga del APK directamente desde GitHub (Sin Cambios)
+// ENDPOINT: Manejar la descarga del APK directamente desde GitHub
 app.get("/public/apps/:packageName/apk_:version.apk", async (req, res) => {
     const { packageName, version } = req.params;
     const pathInRepo = `public/apps/${packageName}/apk_${version}.apk`;
@@ -643,7 +640,7 @@ app.get("/public/apps/:packageName/apk_:version.apk", async (req, res) => {
 
 
 /* ---------------------------------
-   1. 🔍 ENDPOINT DE BÚSQUEDA Y SINCRONIZACIÓN (MODIFICADO para incluir APKPure)
+   1. 🔍 ENDPOINT DE BÚSQUEDA Y SINCRONIZACIÓN
 ------------------------------------*/
 app.get("/api/search_and_sync", async (req, res) => {
     let { q } = req.query; 
@@ -721,7 +718,7 @@ app.get("/api/search_and_sync", async (req, res) => {
         }
     }
 
-    // 5. Intento: Proxy de descarga de APK (APKPure) 🚨 NUEVO INTENTO 🚨
+    // 5. Intento: Proxy de descarga de APK (APKPure)
     if (!appInfo && gpDetails) {
         try {
             appInfo = await downloadApkFromApkPure(packageName, gpDetails);
@@ -759,7 +756,7 @@ app.get("/api/search_and_sync", async (req, res) => {
 
 
 /* ---------------------------------
-   2. ⭐️ ENDPOINT DE CATÁLOGO MASIVO (SIN CAMBIOS)
+   2. ⭐️ ENDPOINT DE CATÁLOGO MASIVO
 ------------------------------------*/
 app.post("/api/sync_popular_apps", (req, res) => {
     const result = syncPopularAppsInBackground();
@@ -773,7 +770,7 @@ app.post("/api/sync_popular_apps", (req, res) => {
 
 
 /* ---------------------------------
-   3. ENDPOINTS INDIVIDUALES (SIN CAMBIOS)
+   3. ENDPOINTS INDIVIDUALES 
 ------------------------------------*/
 app.get("/api/sync_fdroid", async (req, res) => {
     const { packageName } = req.query;
@@ -838,7 +835,7 @@ app.post("/api/manual_add", async (req, res) => {
 });
 
 /* ---------------------------------
-   4. 🔍 ENDPOINTS DE LISTADO (SIN CAMBIOS)
+   4. 🔍 ENDPOINTS DE LISTADO
 ------------------------------------*/
 
 app.get("/api/list_apps", async (req, res) => {
