@@ -180,7 +180,7 @@ async function syncAndSaveApk(packageName, version, displayName, source, apkBuff
 
 
 // ---------------------------------------------------
-// FUNCIÓN DE DESCARGA DE APK POR PROXY (ACTUALIZADA con AGENTE y NUEVO SCRAPING V2)
+// FUNCIÓN DE DESCARGA DE APK POR PROXY (ACTUALIZADA: Scraping V3)
 // ---------------------------------------------------
 
 /**
@@ -209,34 +209,41 @@ async function downloadApkFromProxy(packageName, appDetails) {
     // 2. Analizar el HTML para encontrar el enlace de descarga directa del APK
     const $ = cheerio.load(htmlResponse.data);
     
-    // 🚨 CORRECCIÓN DE SCRAPING V2: Buscar cualquier enlace que contenga la subcadena "download.apk"
+    // 🚨 CORRECCIÓN DE SCRAPING V3: Buscar cualquier enlace que termine en .apk en toda la página.
     let foundDownloadLink = null;
     
-    // Intento 1: Buscar enlaces que contengan la URL de descarga directa
     $('a').each((i, el) => {
         const href = $(el).attr('href');
         
-        // Condición: debe ser una URL que claramente contiene el archivo APK de descarga
-        if (href && (href.includes('download.apk') || href.includes('dl.apk-dl.com'))) {
-            foundDownloadLink = href;
-            return false; // Salir del bucle each
+        // Condición: Busca la descarga directa del APK (.apk al final)
+        if (href && href.endsWith('.apk')) {
+            // Se le da prioridad a enlaces que contienen la URL del dominio de descarga directa
+            if (href.includes('dl.apk-dl.com')) {
+                finalApkUrl = href;
+                return false; // Salir del bucle para tomar el enlace de mayor prioridad
+            } else if (!foundDownloadLink) {
+                 // Si no encontramos el de alta prioridad, guardamos el primero que termine en .apk como respaldo
+                foundDownloadLink = href;
+            }
         }
     });
 
-    if (foundDownloadLink) {
+    if (finalApkUrl === null) {
+        // Si no encontramos el de alta prioridad, usamos el de respaldo (si existe)
         finalApkUrl = foundDownloadLink;
-    } else {
-        // Intento 2: Búsqueda genérica por clase como fallback (menos probable, pero se mantiene)
-        const fallbackButton = $('a.download-btn'); 
-        if (fallbackButton.length) {
-            finalApkUrl = fallbackButton.attr('href');
-        }
     }
 
 
     if (!finalApkUrl || !finalApkUrl.endsWith('.apk')) {
-        throw new Error("No se pudo encontrar el enlace de descarga directo en la página proxy. Posiblemente requiere Captcha o la app no está disponible.");
+        throw new Error("No se pudo encontrar el enlace de descarga directo (.apk) en la página proxy. Posiblemente requiere Captcha o la app no está disponible.");
     }
+    
+    // Añadimos la URL base si el enlace era relativo
+    if (finalApkUrl.startsWith('/')) {
+        const baseUrl = new URL(initialUrl).origin;
+        finalApkUrl = baseUrl + finalApkUrl;
+    }
+
 
     // 3. Descargar el APK binario desde el enlace final (con el agente de ignorar SSL)
     let apkResp;
