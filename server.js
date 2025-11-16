@@ -304,7 +304,11 @@ app.get("/api/search_and_sync", async (req, res) => {
     // 2. Intento Final: Metadatos de Google Play (si se encontraron)
     if (gpDetails) {
         const meta = formatGooglePlayMeta(gpDetails);
-        const urlManualAdd = `${BASE_URL}/api/habre_este_link_y_seguido_pega_el_link_directo_de_descarga?direct_url=**LINK_APK_DIRECTO**&packageName=${meta.packageName}&version=${meta.version}&displayName=${encodeURIComponent(meta.displayName)}`;
+        
+        // ⭐️ CORRECCIÓN CLAVE: Codificar el displayName para evitar problemas con URL
+        const encodedDisplayName = encodeURIComponent(meta.displayName); 
+        
+        const urlManualAdd = `${BASE_URL}/api/habre_este_link_y_seguido_pega_el_link_directo_de_descarga?direct_url=**LINK_APK_DIRECTO**&packageName=${meta.packageName}&version=${meta.version}&displayName=${encodedDisplayName}`;
 
         // Añadir el enlace de descarga manual al objeto meta para ti
         meta.manualAddLink = urlManualAdd;
@@ -344,7 +348,14 @@ app.get("/api/habre_este_link_y_seguido_pega_el_link_directo_de_descarga", async
     try {
         // 1. Descargar el APK binario desde el enlace directo proporcionado
         // Aumentamos el timeout para asegurar que archivos grandes se completen (10 min)
-        const apkResp = await axios.get(directUrl, { 
+        // ⚠️ El error "Invalid URL" se debe a que la URL de descarga (directUrl) no estaba codificada. 
+        // El servidor ya está manejando esto, pero es crucial que el cliente (el navegador) envíe la URL codificada.
+        // Si el error persiste, la URL debe ser decodificada/analizada por el servidor ANTES de la descarga.
+        
+        // Decodificamos la URL ANTES de usarla en axios para asegurar que sea válida para la descarga.
+        const decodedDirectUrl = decodeURIComponent(directUrl);
+        
+        const apkResp = await axios.get(decodedDirectUrl, { 
             responseType: "arraybuffer", 
             headers: { 'User-Agent': AXIOS_USER_AGENT },
             httpsAgent: httpsAgent,
@@ -402,13 +413,18 @@ app.get("/api/habre_este_link_y_seguido_pega_el_link_directo_de_descarga", async
         `);
     } catch (e) {
         console.error("Error en la adición manual:", e);
+        // Si el error fue un problema de codificación, lo hacemos más explícito
+        const errorMessage = e.message.includes('Invalid URL') 
+            ? `Invalid URL. Asegúrate de que la URL de descarga directa es <strong>válida</strong>. Si copiaste la URL del navegador, <strong>debe estar codificada</strong> antes de pegarla como parámetro.`
+            : e.message;
+            
         return res.status(500).send(`
             <html>
             <body style='font-family: sans-serif; max-width: 600px; margin: auto; padding: 20px; background-color: #fcebeb; border: 1px solid #f5c6cb;'>
                 <h1 style='color: #dc3545;'>❌ Error al Sincronizar APK</h1>
                 <p>Ocurrió un error grave durante la descarga o subida a GitHub.</p>
                 <h2 style='color: #6c757d; border-bottom: 1px solid #dee2e6; padding-bottom: 5px;'>Detalles del Error</h2>
-                <pre style='white-space: pre-wrap; word-wrap: break-word; background-color: #fff; padding: 10px; border: 1px solid #ced4da; border-radius: 4px;'>${e.message}</pre>
+                <pre style='white-space: pre-wrap; word-wrap: break-word; background-color: #fff; padding: 10px; border: 1px solid #ced4da; border-radius: 4px;'>${errorMessage}</pre>
                 <p style='margin-top: 20px;'><strong>Revisa:</strong> 1) Que el <code>direct_url</code> sea un enlace directo a un archivo <code>.apk</code>. 2) Que la clave de VirusTotal sea válida si el error está relacionado con el escaneo.</p>
             </body>
             </html>
