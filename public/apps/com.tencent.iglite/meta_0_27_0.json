@@ -1,0 +1,127 @@
+{
+  "title": "PUBG MOBILE LITE",
+  "description": "PUBG MOBILE LITE utiliza Unreal Engine 4 y se basa en la jugabilidad original de PUBG MOBILE para crear partidas en modo Arena llenas de acción que duran 10 minutos o menos. El juego simplificado requiere solo 600 MB de espacio libre y 1 GB de RAM para funcionar sin problemas.\n\n1. PUBG MOBILE LITE\n60 jugadores caen en una isla de 2 km x 2 km, rica en recursos y luchan para sobrevivir en un campo de batalla cada vez más reducido. Busca armas, vehículos y suministros para ayudarte en la batalla. ¡Prepárate para aterrizar y luchar para ser el último en pie!\nDisponible en 12 idiomas: inglés, español, portugués, ruso, turco, indonesio, tailandés, chino simplificado, chino tradicional, árabe, alemán, y francés.\n\n2. Ambiente de juego justo\nSistema avanzado anti-trampa para garantizar que todos los jugadores de PUBG MOBILE LITE puedan disfrutar de una experiencia de juego justa.\n\n3. Arena\nAlmacén: ¡intensas batallas 4 contra 4 con infinitas reapariciones para partidas emocionantes!\n\n4. Forma equipo con tus amigos\nEquipos locales, tarjetas de sala y los modos de clan hacen que sea más fácil seguir jugando con tus amigos en cualquier momento y en cualquier lugar.\n\n5. Gráficos y audio HD\nLa increíble Unreal Engine 4 crea un juego realista e inmersivo en un mapa HD expansivo. El audio de alta definición y los efectos de sonido 3D producen una experiencia de juego como nunca antes.\n\n6. Trabajo en equipo\nInvita a tus amigos a jugar y crear una estrategia ganadora usando el chat de voz. Prepara emboscadas y sorprende a tus enemigos. Revive a tus compañeros de equipo en el fragor de la batalla y lucha por el dominio de tu clan.\n\n7. Actualizaciones oficiales\nSíguenos en nuestras redes sociales para conocer las últimas actualizaciones:\nPágina oficial: https://www.pubgmlite.com\nFacebook: https:www.facebook.com/PUBGMOBILELITE\nTwitter: https://twitter.com/pubgmobilelite",
+  "descriptionHTML": "PUBG MOBILE LITE utiliza Unreal Engine 4 y se basa en la jugabilidad original de PUBG MOBILE para crear partidas en modo Arena llenas de acción que duran 10 minutos o menos. El juego simplificado requiere solo 600 MB de espacio libre y 1 GB de RAM para funcionar sin problemas.<br><br>1. PUBG MOBILE LITE<br>60 jugadores caen en una isla de 2 km x 2 km, rica en recursos y luchan para sobrevivir en un campo de batalla cada vez más reducido. Busca armas, vehículos y suministros para ayudarte en la batalla. ¡Prepárate para aterrizar y luchar para ser el último en pie!<br>Disponible en 12 idiomas: inglés, español, portugués, ruso, turco, indonesio, tailandés, chino simplificado, chino tradicional, árabe, alemán, y francés.<br><br>2. Ambiente de juego justo<br>Sistema avanzado anti-trampa para garantizar que todos los jugadores de PUBG MOBILE LITE puedan disfrutar de una experiencia de juego justa.<br><br>3. Arena<br>Almacén: ¡intensas batallas 4 contra 4 con infinitas reapariciones para partidas emocionantes!<br><br>4. Forma equipo con tus amigos<br>Equipos locales, tarjetas de sala y los modos de clan hacen que sea más fácil seguir jugando con tus amigos en cualquier momento y en cualquier lugar.<br><br>5. Gráficos y audio HD<br>La increíble Unreal Engine 4 crea un juego realista e inmersivo en un mapa HD expansivo. El audio de alta definición y los efectos de sonido 3D producen una experiencia de juego como nunca antes.<br><br>6. Trabajo en equipo<br>Invita a tus amigos a jugar y crear una estrategia ganadora usando el chat de voz. Prepara emboscadas y sorprende a tus enemigos. Revive a tus compañeros de equipo en el fragor de la batalla y lucha por el dominio de tu clan.<br><br>7. Actualizaciones oficiales<br>Síguenos en nuestras redes sociales para conocer las últimas actualizaciones:<br>Página oficial: https://www.pubgmlite.com<br>Facebook: https:www.facebook.com/PUBGMOBILELITE<br>Twitter: https://twitter.com/pubgmobilelite",
+  "summary": "¡Ligero, pero más emocionante!",
+  "installs": "100.000.000+",
+  "minInstalls": 100000000,
+  "maxInstalls": 272493545,
+  "score": 3.9796562,
+  "scoreText": "4,0",
+  "ratings": 8355516,
+  "reviews": 13604,
+  "histogram": {
+    "1": 1520916,
+    "2": 342638,
+    "3": 424707,
+    "4": 562466,
+    "5": 5503907
+  },
+  "price": 0,
+  "free": true,
+  "currency": "USD",
+  "priceText": "Free",
+  "available": false,
+  "offersIAP": false,
+  "androidVersion": "VARY",
+  "androidVersionText": "Varies with device",
+  "androidMaxVersion": "VARY",
+  "developer": "Level Infinite",
+  "developerId": "8638120915920097780",
+  "developerEmail": "PUBGMOBILElite_CS@tencentgames.com",
+  "developerWebsite": "https://www.pubgmlite.com/en-US",
+  "developerLegalName": "PROXIMA BETA PTE. LIMITED",
+  "developerLegalEmail": "proximabeta8@gmail.com",
+  "developerLegalAddress": "C/O: PB CORPORATE SERVICES PTE LTD, 10 Anson Road, Singapore 079903",
+  "developerLegalPhoneNumber": "+86 181 2705 1472",
+  "privacyPolicy": "http://game.qq.com/privacy_en.shtml",
+  "developerInternalID": "8638120915920097780",
+  "genre": "Acción",
+  "genreId": "GAME_ACTION",
+  "categories": [
+    {
+      "name": "Acción",
+      "id": "GAME_ACTION"
+    },
+    {
+      "name": "Disparos",
+      "id": null
+    },
+    {
+      "name": "Disparos tácticos",
+      "id": null
+    },
+    {
+      "name": "Multijugador",
+      "id": null
+    },
+    {
+      "name": "Multijugador competitivos",
+      "id": null
+    },
+    {
+      "name": "Realistas",
+      "id": null
+    },
+    {
+      "name": "Batalla",
+      "id": null
+    },
+    {
+      "name": "Armas",
+      "id": null
+    },
+    {
+      "name": "Pistola",
+      "id": null
+    }
+  ],
+  "icon": "https://play-lh.googleusercontent.com/FDRKka66TQRZjlR1_StX3x9Gxs6UtWEF5rfdNJEs_rDci28TOUrsNxYqxXzL5KrITQ",
+  "headerImage": "https://play-lh.googleusercontent.com/Hy6k6vLYFfIb_EECk4fBPL4uL4nI9f_G9JoDM3Ht2nM5mdGDJ2Ijy_62ZYQg54oUZOGY",
+  "screenshots": [
+    "https://play-lh.googleusercontent.com/_PVc2tKsEEcpjTRf_VglzQS9hq0D4oRb0h34_KFzjyiD3C9Zvbp8c9jqbJyppluXLzl4",
+    "https://play-lh.googleusercontent.com/jdixrFNP1oFfC7PFAOYjtkbr9uXwwKSBrtBaWZhrwLIzhZvdIfCgW6tqj-fDWpE1lrI",
+    "https://play-lh.googleusercontent.com/789SL0dHOEx_5ovOnDh2BRMJQBDca5dhxpucuql_mEAzLondZQRHuD_viPI6uprD7FM5",
+    "https://play-lh.googleusercontent.com/GEQadM864sVr4NolXaGKiztojPSH_kGmK3XCGXKZyr18Pqn2YaLdk3y8L3GkJ3KhqGOV",
+    "https://play-lh.googleusercontent.com/nK2GMo-SfDJ604M2uPqYyVt6IBLEdJz0tealnftWWEKukcwqCIr6FYEqq9KteoPFIq8",
+    "https://play-lh.googleusercontent.com/6M6xyanMHt8qHvSHy_dUtm9tyuX4po5zGbV8zwQm72HOe7BSKsqz4R2j1gncqXSmvw",
+    "https://play-lh.googleusercontent.com/7Jxvjao7ztI7vGyyR3wMUBKAI7y04OAuZajVEXvM6GZZgNS9yGKCrgYslRH0Vjuyhmc",
+    "https://play-lh.googleusercontent.com/-t6lPRAFbnCAoUKVcrrNvQctWtZzxynvr6dxWxspS2vRdbuTdzwrwBYAyNgrOWEzF6Y",
+    "https://play-lh.googleusercontent.com/G1pw8xRdx0MFK8qQs510BBLM1hc4FSPqpph3myp8ZZDX5JH8iBwvWXg6eWtLnBiZBZo",
+    "https://play-lh.googleusercontent.com/zi25zAoQWFtqF4yXnXGp-C2ck66RqTQAJ2EhdtfJ3geHapb1NBEz87tYi_0yIqTHM9w",
+    "https://play-lh.googleusercontent.com/W1eIql5X77qEjmX35vgaX88l3M9u0DUxgPiReXQDk6FQxE3fWCZgbCkEU3IV_bkXt-bT",
+    "https://play-lh.googleusercontent.com/oYMhRnZRwYMMEOEfdgiO8BssBdYrqomqPNhwmGyFTadxyBCHi2LbJJfQHXzjfdgR19HW",
+    "https://play-lh.googleusercontent.com/_T-JzvdH3alrrOLOkagdt_mOD_2i-ob6IpmgsXtnuKVM5BggegpPNTGw8QmZ-fiP5oE",
+    "https://play-lh.googleusercontent.com/V1WamScszFVWTNlrKtistvBaCz0SZG0CNk1D9FejAeK0okyyjXdiXNU6UdWEtQ-nfxU",
+    "https://play-lh.googleusercontent.com/6geK7L7Jsr8t0GxYgZw0e58lRIqZA_zn-gXgrTjvgIIHRKMrqjtfsGvyLVzXC24gKmQ",
+    "https://play-lh.googleusercontent.com/gqYHXKSdYTnOmP-xOxOpl3KucPXPWCbtTVUujNv-shkxu_uiZKcuhI-otg84SMX-Cw",
+    "https://play-lh.googleusercontent.com/I6JIKaf9XfTE3I1DXkbvaURQ4lUxdCNpTR2x9zhQAPiQrSWMyOaXKs5PIQb1_co_rA",
+    "https://play-lh.googleusercontent.com/F4SxhfKcZm_WdfzsfLDGHCP9-1tLM1qYctESF5eZGWx5MJjWrIu2Uub0DNSHHpc7e7U"
+  ],
+  "video": "https://www.youtube.com/embed/tqVNV8UxKRg?ps=play&vq=large&rel=0&autohide=1&showinfo=0",
+  "videoImage": "https://play-lh.googleusercontent.com/Hy6k6vLYFfIb_EECk4fBPL4uL4nI9f_G9JoDM3Ht2nM5mdGDJ2Ijy_62ZYQg54oUZOGY",
+  "previewVideo": "https://play-games.googleusercontent.com/vp/mp4/1280x720/tqVNV8UxKRg.mp4",
+  "contentRating": "Para mayores de 13 años",
+  "contentRatingDescription": "Violencia y Sangre",
+  "adSupported": true,
+  "updated": 1705551667000,
+  "version": "0.27.0",
+  "recentChanges": "<br>0.20.0 Actualización de noviembre: Festival de invierno<br>Pelea de nieve de Varenga<br>Winter Winter Chicken Dinner<br><br>La primera nevada de Varenga y juegos te esperan<br>Esquí: Sube una montaña nevada<br>Festival de invierno &quot;Especialidad&quot;: ¡Huevo congelado! Tíralo al suelo para una barrera de escultura de hielo.<br>Castillo de Invierno: toma tu equipo y aventúrate en una nueva área<br>Festival de Invierno en la Sala y la Spawn Island<br>Marca universal: marca en tiempo real da información de combate más precisa",
+  "comments": [],
+  "preregister": false,
+  "earlyAccessEnabled": false,
+  "isAvailableInPlayPass": false,
+  "appId": "com.tencent.iglite",
+  "url": "https://play.google.com/store/apps/details?id=com.tencent.iglite&hl=es&gl=us",
+  "source": "manual_external_link",
+  "packageName": "com.tencent.iglite",
+  "addedAt": "2025-11-16T15:38:11.361Z",
+  "externalDownloadUrl": "https://apkcombo.com/r2?u=https%3A%2F%2Fapks.39b7cb94d40914bac590886981b0ed6e.r2.cloudflarestorage.com%2Fcom.tencent.iglite%2F0.27.0%2F15155.e98b1b70df8ca4984149ffc5f4da6de4ca813893.zip%3Fresponse-content-disposition%3Dattachment%253B%2520filename%253D%2522PUBG%2520MOBILE%2520LITE_0.27.0_apkcombo.com.xapk%2522%26response-content-type%3Dapplication%252Fxapk-package-archive%26X-Amz-Algorithm%3DAWS4-HMAC-SHA256%26X-Amz-Date%3D20251116T152411Z%26X-Amz-SignedHeaders%3Dhost%26X-Amz-Expires%3D14399%26X-Amz-Credential%3D3cb727b4cd4780c410b780ac7caa4da3%252F20251116%252Fauto%252Fs3%252Faws4_request%26X-Amz-Signature%3Ddf0cc855e9d1105e66195aa51dd3ff595ef35de1fcedd461633626250b8c041a&fp=32f67e0d886010b19116b3d159eac131&ip=190.236.24.53&package_name=com.tencent.iglite&lang=es",
+  "warnings": "Metadatos sincronizados desde Google Play. Enlace de descarga externo guardado.",
+  "apkPath": "N/A (Solo metadatos)",
+  "downloadUrl": "N/A (Solo metadatos)",
+  "virustotal": {
+    "status": "skipped",
+    "message": "Escaneo deshabilitado ya que el APK no fue subido al repositorio."
+  }
+}
