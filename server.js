@@ -1,17 +1,46 @@
-// server.js
 import express from "express";
 import dotenv from "dotenv";
-dotenv.config();
-
-// 🚨 IMPORTAR DEPENDENCIAS FIREBASE
-// Ahora auth, db y FieldValue se importan de firebase-config.js
-import { auth, db, FieldValue } from "./firebase-config.js"; 
+import * as admin from 'firebase-admin'; // 🚨 IMPORTADO EL SDK ADMIN
 import crypto from 'crypto'; 
 import { Octokit } from "@octokit/rest";
 import axios from "axios";
 import gplay from "google-play-scraper"; 
 import https from "https"; 
 import url from 'url';
+
+// Cargar variables de entorno (útil para desarrollo local, en Fly.io se inyectan directamente)
+dotenv.config();
+
+/* --------- Inicialización de Firebase Admin SDK --------- */
+// Obtener el JSON de la variable de entorno
+const SERVICE_ACCOUNT_JSON = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+
+if (!SERVICE_ACCOUNT_JSON) {
+    console.error("FATAL: La variable de entorno FIREBASE_SERVICE_ACCOUNT_JSON no está configurada.");
+    process.exit(1);
+}
+
+try {
+    const serviceAccount = JSON.parse(SERVICE_ACCOUNT_JSON);
+    
+    // Inicializar la aplicación de Firebase
+    admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount)
+    });
+} catch (e) {
+    console.error("FATAL: Error al parsear FIREBASE_SERVICE_ACCOUNT_JSON. Verifique el formato JSON.", e);
+    process.exit(1);
+}
+
+// 🚨 VARIABLES DE FIREBASE ACCESIBLES GLOBALMENTE
+// Las importaciones se reemplazan por las referencias directas del SDK Admin inicializado.
+const auth = admin.auth();
+const db = admin.firestore();
+const FieldValue = admin.firestore.FieldValue; // Se mantiene la referencia para las operaciones atómicas
+
+/* ----------------------------------------------------------------------------------
+   CÓDIGO PRINCIPAL DEL SERVIDOR
+-------------------------------------------------------------------------------------*/
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -20,6 +49,7 @@ app.use(express.json({ limit: "10mb" }));
 app.use(express.static('public'));
 
 /* --------- Configs & Global Constants --------- */
+// Se asume que estas variables de entorno también están configuradas en Fly.io
 const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
 const G_OWNER = process.env.GITHUB_OWNER; // Ej: 'tu-usuario-github'
 const G_REPO = process.env.GITHUB_REPO; // Ej: 'nombre-del-repositorio'
@@ -31,6 +61,9 @@ const STATS_COLLECTION = 'app_stats';
 
 const VIRUSTOTAL_API_KEY = process.env.VIRUSTOTAL_API_KEY; 
 const BASE_URL = process.env.BASE_URL || 'https://apps-masitaprex-v2.fly.dev'; 
+
+// Agente HTTPS para axios (necesario si la URL del APK es HTTPS y se usa Node.js antiguo)
+const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 /* --------- Helpers GitHub --------- */
 /**
@@ -1273,16 +1306,10 @@ app.get("/api/public/apps/search", async (req, res) => {
 });
 
 
-// 🚨 Mantener los endpoints de sincronización de Google Play (aunque su lógica no es relevante para el Dev Console)
-// Los endpoints de google play, etc. se mantienen del código original y no se modifican aquí por brevedad.
+// 🚨 Se omiten aquí por brevedad las rutas de sincronización con Google Play, 
+// asumiendo que el resto del código es correcto, pero se mantiene la estructura.
 
 
 /* --------- Start server --------- */
-// 🚨 CORRECCIÓN CLAVE: Usamos '0.0.0.0' para escuchar en todas las interfaces,
-// que es lo que espera Fly.io, y el puerto 3000 por defecto.
 const PORT = process.env.PORT || 3000;
-const HOST = process.env.HOST || '0.0.0.0';
-
-app.listen(PORT, HOST, () => {
-    console.log(`Server running on http://${HOST}:${PORT}`);
-});
+app.listen(PORT, ()=> console.log("App running on", PORT));
