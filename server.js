@@ -5,13 +5,15 @@ dotenv.config();
 
 // 🚨 IMPORTAR DEPENDENCIAS FIREBASE
 import { auth, db } from "./firebase-config.js"; 
-import { FieldValue } from 'firebase-admin/firestore'; // Importación necesaria para FieldValue
 import crypto from 'crypto'; 
 import { Octokit } from "@octokit/rest";
 import axios from "axios";
 import gplay from "google-play-scraper"; 
 import https from "https"; 
 import url from 'url';
+
+// Importar FieldValue para operaciones atómicas, ya que se usa más adelante
+import { FieldValue } from 'firebase-admin/firestore'; 
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -83,68 +85,15 @@ function generateAppId() {
 }
 
 /**
- * Obtiene el meta.json de GitHub y las estadísticas de Firestore para una app pública.
- * 🚨 Función Agregada para cargar y enriquecer el catálogo.
+ * Convierte tamaño en bytes a MB y formatea la cadena.
+ * @param {number} bytes - Tamaño del archivo en bytes.
+ * @returns {string} - Tamaño formateado (e.g., "54.2 MB" o "0.8 MB").
  */
-async function getPublicAppDetails(appId) {
-    const appPath = `public/apps/${appId}`; // Asumiendo que el ID de la app es el nombre de la carpeta
-    const metaPath = `${appPath}/meta.json`;
-
-    let metadata = null;
-    let stats = { downloads: 0 };
-
-    // 1. Obtener Metadatos de GitHub
-    try {
-        const raw = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: metaPath });
-        metadata = JSON.parse(Buffer.from(raw.data.content, "base64").toString("utf8"));
-    } catch (e) {
-        if (e.status === 404) {
-            // console.warn(`Meta.json no encontrado para el ID de app público: ${appId}`);
-            return null;
-        }
-        throw e;
-    }
-
-    // 2. Obtener Estadísticas de Firestore
-    try {
-        const statsDoc = await db.collection(STATS_COLLECTION).doc(appId).get();
-        if (statsDoc.exists) {
-            stats = statsDoc.data();
-        }
-    } catch (e) {
-        console.error(`Error al obtener estadísticas para ${appId}:`, e.message);
-    }
-
-    // 3. Enriquecer con Tamaño (MB) y Descargas
-    // Se asume que el objeto JSON tiene una propiedad 'versions' o se puede calcular el tamaño de la última versión.
-    // Usaremos el tamaño de la versión más reciente (si existe) o el tamaño general si está presente.
-    let sizeInBytes = 0;
-    if (metadata.versions && metadata.versions.length > 0) {
-        // Asumiendo que la última versión es la más relevante para el tamaño
-        sizeInBytes = metadata.versions.slice(-1)[0].apk_size || 0;
-    }
-    // Si la información de la versión no está en el meta.json público, puede que el tamaño esté en otro campo 
-    // o se tenga que inferir de otra forma. Por ahora, asumimos que 'apk_size' está en las versiones.
-
-    const sizeInMB = (sizeInBytes / (1024 * 1024)).toFixed(2);
-    
-    // Usar 'title' (como en el ejemplo del usuario) o 'name'
-    const appName = metadata.title || metadata.name || 'Sin Nombre';
-
-    return {
-        appId: metadata.appId || appId,
-        title: appName,
-        category: metadata.category || metadata.genre || 'General',
-        icon: metadata.icon || null,
-        summary: metadata.summary || metadata.description,
-        // Datos específicos solicitados:
-        downloads: stats.downloads || 0,
-        sizeMB: parseFloat(sizeInMB),
-        // Otros campos relevantes del meta
-        ...metadata 
-    };
+function formatBytesToMB(bytes) {
+    if (bytes === 0) return '0 MB';
+    const mb = bytes / (1024 * 1024);
+    return mb.toFixed(1) + ' MB';
 }
-
 
 /* --------- Middleware de Autenticación por API Key --------- */
 /**
@@ -588,8 +537,7 @@ app.post("/apps/:appId/upload-url", apiKeyAuth, checkAppOwnership, async (req, r
 
     try {
         // 1. Validar que la URL funciona y obtener cabeceras (tamaño)
-        // La variable 'httpsAgent' no está definida, se asume que 'axios' maneja HTTPS
-        const head = await axios.head(apk_url, { maxRedirects: 5 }); 
+        const head = await axios.head(apk_url, { maxRedirects: 5, httpsAgent });
         const apkSize = parseInt(head.headers['content-length'], 10) || 0;
         
         // 2. Intentar descargar los primeros 32 MB para VirusTotal y metadatos (Simulación)
@@ -783,7 +731,6 @@ app.get("/apps/:appId/latest", apiKeyAuth, checkAppOwnership, async (req, res) =
    8️⃣ ESTADÍSTICAS
    NOTA: Las estadísticas se guardarán en Firestore para escalabilidad.
 -------------------------------------------------------------------------------------*/
- // Para operaciones atómicas (Nota: FieldValue ya fue importado arriba)
 
 /**
  * POST /stats/report-download - Reportar una descarga.
@@ -1113,32 +1060,79 @@ app.post("/notifications/mark-read", apiKeyAuth, async (req, res) => {
 -------------------------------------------------------------------------------------*/
 
 /**
- * Endpoint para el catálogo público (apps en public/apps, no en public/developer_apps).
- * Asume que el desarrollador copia sus JSONs a este directorio para hacerlas públicas.
+ * Función auxiliar para procesar los metadatos de las aplicaciones del catálogo público.
+ * Agrega el tamaño en MB y la cantidad de descargas.
+ * @param {object} meta - Objeto de metadatos de la aplicación.
+ * @returns {object} - Objeto de aplicación con datos enriquecidos.
+ */
+async function enhanceAppMetadata(meta) {
+    const latestVersion = meta.versions && meta.versions.length > 0
+        ? meta.versions.slice(-1)[0]
+        : null;
+
+    // Obtener las descargas reales de Firestore si están disponibles
+    let downloadsFromStats = 0;
+    try {
+        const statsDoc = await db.collection(STATS_COLLECTION).doc(meta.appId).get();
+        if (statsDoc.exists) {
+            downloadsFromStats = statsDoc.data().downloads || 0;
+        }
+    } catch (e) {
+        console.warn(`No se pudieron obtener estadísticas para ${meta.appId}: ${e.message}`);
+    }
+
+    // Usar las descargas de Firestore o las de Google Play si se sincronizaron
+    const installsText = downloadsFromStats > 0 
+        ? downloadsFromStats.toLocaleString() + "+" // Usar el número real si existe
+        : meta.installs || "0+"; // Usar el campo de Google Play si no hay stats
+
+    const sizeInBytes = latestVersion?.apk_size || 0;
+
+    return {
+        appId: meta.appId,
+        name: meta.name || meta.title,
+        description: meta.summary || meta.description,
+        icon: meta.iconUrl || meta.icon,
+        category: meta.category || meta.genre || 'General',
+        score: meta.score,
+        ratings: meta.ratings,
+        installs: installsText, // Cantidad de descargas/instalaciones
+        size_mb: formatBytesToMB(sizeInBytes), // Tamaño del APK en MB
+        version: latestVersion?.version_name || meta.version || 'N/A',
+        updatedAt: meta.updatedAt || meta.updated
+    };
+}
+
+/**
+ * Endpoint para el catálogo público (apps en public/apps).
+ * Lista las apps populares y enriquece sus datos con tamaño en MB y descargas.
  */
 app.get("/api/public/apps/popular", async (req, res) => {
     try {
-        // Obtener el listado de archivos directamente de la carpeta principal del catálogo
         const tree = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: "public/apps" });
         const appFolders = tree.data.filter(dir => dir.type === "dir");
         
         const popularApps = [];
         for (const folder of appFolders) {
              try {
-                // Asume que el archivo principal de metadatos de la app popular se llama 'meta.json'
                 const metaRaw = await octokit.repos.getContent({ 
                     owner: G_OWNER, 
                     repo: G_REPO, 
                     path: `${folder.path}/meta.json` 
                 });
                 const meta = JSON.parse(Buffer.from(metaRaw.data.content, "base64").toString("utf8"));
-                popularApps.push(meta);
+                
+                // Enriquecer y agregar al catálogo
+                const enhancedApp = await enhanceAppMetadata(meta);
+                popularApps.push(enhancedApp);
 
              } catch (e) {
-                 // Si falla la obtención de meta.json, se ignora esa carpeta
-                 console.warn(`No se pudo cargar meta.json para ${folder.name}: ${e.message}`);
+                 console.warn(`No se pudo cargar o enriquecer meta.json para ${folder.name}: ${e.message}`);
              }
         }
+        
+        // Opcional: Ordenar por descargas o rating
+        popularApps.sort((a, b) => (b.score || 0) - (a.score || 0));
 
         return res.json({ ok: true, apps: popularApps });
     } catch (e) {
@@ -1148,81 +1142,138 @@ app.get("/api/public/apps/popular", async (req, res) => {
     }
 });
 
+
 /**
- * 🚨 NUEVO ENDPOINT: Carga el catálogo público, permitiendo filtrado y ordenamiento.
- * Incluye tamaño en MB y cantidad de descargas.
- * Parámetros: category (opcional), sort ('downloads' por defecto, 'size', 'title').
+ * 🆕 Endpoint para listar aplicaciones por categorías y enriquecer los datos.
+ * Endpoint: /api/public/apps/categories?category=JUEGOS
+ * @param {string} req.query.category - Categoría a filtrar (opcional).
  */
-app.get("/api/public/catalog", async (req, res) => {
-    const { category, sort = 'downloads' } = req.query; 
-    
+app.get("/api/public/apps/categories", async (req, res) => {
+    const { category } = req.query; // Categoría a buscar (e.g., "Juegos", "Herramientas")
+
     try {
-        // 1. Obtener la lista de carpetas/apps públicas
         const tree = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: "public/apps" });
-        const appFolders = tree.data.filter(dir => dir.type === "dir").map(dir => dir.name);
+        const appFolders = tree.data.filter(dir => dir.type === "dir");
         
-        // 2. Cargar y enriquecer los detalles de cada app en paralelo
-        // Utilizamos la nueva función auxiliar getPublicAppDetails
-        const appPromises = appFolders.map(appId => getPublicAppDetails(appId));
-        let catalog = (await Promise.all(appPromises)).filter(app => app !== null);
+        const appsByCategory = {};
+        const allApps = [];
 
-        // 3. Filtrar por categoría (si se especifica)
+        for (const folder of appFolders) {
+            try {
+                const metaRaw = await octokit.repos.getContent({ 
+                    owner: G_OWNER, 
+                    repo: G_REPO, 
+                    path: `${folder.path}/meta.json` 
+                });
+                const meta = JSON.parse(Buffer.from(metaRaw.data.content, "base64").toString("utf8"));
+                
+                // Enriquecer los datos para el catálogo
+                const enhancedApp = await enhanceAppMetadata(meta);
+                
+                const appCategory = enhancedApp.category.toUpperCase();
+
+                // 1. Si se especificó una categoría y no coincide, la ignoramos
+                if (category && appCategory !== category.toUpperCase()) {
+                    continue;
+                }
+
+                // 2. Acumular por categoría (si no se especifica un filtro)
+                if (!category) {
+                    if (!appsByCategory[appCategory]) {
+                        appsByCategory[appCategory] = [];
+                    }
+                    appsByCategory[appCategory].push(enhancedApp);
+                } else {
+                    // Si se especifica un filtro, solo devolvemos el array plano
+                    allApps.push(enhancedApp);
+                }
+
+            } catch (e) {
+                 console.warn(`No se pudo cargar o enriquecer meta.json para ${folder.name}: ${e.message}`);
+            }
+        }
+
         if (category) {
-            catalog = catalog.filter(app => (app.category || app.genre).toLowerCase() === category.toLowerCase());
+            return res.json({ 
+                ok: true, 
+                category: category, 
+                apps: allApps, 
+                count: allApps.length 
+            });
         }
-
-        // 4. Ordenar (por defecto por descargas)
-        if (sort === 'size') {
-            catalog.sort((a, b) => b.sizeMB - a.sizeMB);
-        } else if (sort === 'title' || sort === 'name') {
-            catalog.sort((a, b) => (a.title || a.name || '').localeCompare(b.title || b.name || ''));
-        } else { // Por defecto o 'downloads'
-            catalog.sort((a, b) => b.downloads - a.downloads);
-        }
-
-        return res.json({ ok: true, apps: catalog, total: catalog.length });
+        
+        return res.json({ 
+            ok: true, 
+            message: "Catálogo cargado por categorías.",
+            categories: appsByCategory 
+        });
 
     } catch (e) {
         if (e.status === 404) return res.json({ ok: true, apps: [], message: "El catálogo público (public/apps) está vacío." });
-        console.error("Error al listar el catálogo:", e);
+        console.error("Error al listar apps por categorías:", e);
         return res.status(500).json({ ok: false, error: e.message });
     }
 });
 
+
 /**
- * 🚨 NUEVO ENDPOINT: Busca aplicaciones públicas por nombre (title o summary).
- * Parámetro: q (término de búsqueda).
+ * 🆕 Endpoint para buscar una aplicación específica por su nombre.
+ * Endpoint: /api/public/apps/search?query=facebook
+ * @param {string} req.query.query - Nombre o parte del nombre a buscar.
  */
 app.get("/api/public/apps/search", async (req, res) => {
-    const { q } = req.query;
-    if (!q) {
-        return res.status(400).json({ ok: false, error: "El parámetro de búsqueda 'q' es requerido (ej: /search?q=facebook)." });
+    const { query } = req.query;
+    
+    if (!query) {
+        return res.status(400).json({ ok: false, error: "El parámetro 'query' es requerido para la búsqueda." });
     }
-    const searchTerm = q.toLowerCase();
+    
+    const lowerCaseQuery = query.toLowerCase();
 
     try {
-        // 1. Obtener la lista de carpetas/apps públicas
         const tree = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: "public/apps" });
-        const appFolders = tree.data.filter(dir => dir.type === "dir").map(dir => dir.name);
+        const appFolders = tree.data.filter(dir => dir.type === "dir");
         
-        // 2. Cargar y enriquecer los detalles de cada app en paralelo
-        const appPromises = appFolders.map(appId => getPublicAppDetails(appId));
-        let catalog = (await Promise.all(appPromises)).filter(app => app !== null);
-        
-        // 3. Filtrar por término de búsqueda (en title o summary)
-        const results = catalog.filter(app => 
-            (app.title || app.name || '').toLowerCase().includes(searchTerm) ||
-            (app.summary || '').toLowerCase().includes(searchTerm) // Búsqueda en resumen
-        );
+        const searchResults = [];
 
-        return res.json({ ok: true, results, total: results.length, query: q });
+        for (const folder of appFolders) {
+            try {
+                const metaRaw = await octokit.repos.getContent({ 
+                    owner: G_OWNER, 
+                    repo: G_REPO, 
+                    path: `${folder.path}/meta.json` 
+                });
+                const meta = JSON.parse(Buffer.from(metaRaw.data.content, "base64").toString("utf8"));
+                
+                // Buscar coincidencia en el nombre o descripción
+                const appName = (meta.name || meta.title || '').toLowerCase();
+                const appDescription = (meta.description || '').toLowerCase();
+
+                if (appName.includes(lowerCaseQuery) || appDescription.includes(lowerCaseQuery)) {
+                    // Enriquecer los datos para el catálogo
+                    const enhancedApp = await enhanceAppMetadata(meta);
+                    searchResults.push(enhancedApp);
+                }
+
+            } catch (e) {
+                 console.warn(`No se pudo cargar meta.json durante la búsqueda para ${folder.name}: ${e.message}`);
+            }
+        }
+
+        return res.json({ 
+            ok: true, 
+            query: query,
+            results: searchResults,
+            count: searchResults.length 
+        });
 
     } catch (e) {
         if (e.status === 404) return res.json({ ok: true, results: [], message: "El catálogo público (public/apps) está vacío." });
-        console.error("Error al buscar aplicaciones:", e);
+        console.error("Error al buscar apps:", e);
         return res.status(500).json({ ok: false, error: e.message });
     }
 });
+
 
 // 🚨 Mantener los endpoints de sincronización de Google Play (aunque su lógica no es relevante para el Dev Console)
 // Los endpoints de google play, etc. se mantienen del código original y no se modifican aquí por brevedad.
