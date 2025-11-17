@@ -1278,5 +1278,11 @@ app.get("/api/public/apps/search", async (req, res) => {
 
 
 /* --------- Start server --------- */
+// 🚨 CORRECCIÓN CLAVE: Usamos '0.0.0.0' para escuchar en todas las interfaces,
+// que es lo que espera Fly.io, y el puerto 3000 por defecto.
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, ()=> console.log("App running on", PORT));
+const HOST = process.env.HOST || '0.0.0.0';
+
+app.listen(PORT, HOST, () => {
+    console.log(`Server running on http://${HOST}:${PORT}`);
+});
