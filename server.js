@@ -9,6 +9,7 @@ import https from "https";
 import url from 'url';
 
 // Cargar variables de entorno (útil para desarrollo local, en Fly.io se inyectan directamente)
+// Esto lee: BASE_URL, FIREBASE_SERVICE_ACCOUNT_JSON, GITHUB_OWNER, GITHUB_REPO, GITHUB_TOKEN, VIRUSTOTAL_API_KEY
 dotenv.config();
 
 /* --------- Inicialización de Firebase Admin SDK --------- */
@@ -21,14 +22,16 @@ if (!SERVICE_ACCOUNT_JSON) {
 }
 
 try {
+    // La clave es que el JSON esté bien formado en la variable de entorno para que JSON.parse funcione
     const serviceAccount = JSON.parse(SERVICE_ACCOUNT_JSON);
     
     // Inicializar la aplicación de Firebase
     admin.initializeApp({
         credential: admin.credential.cert(serviceAccount)
     });
+    console.log("✅ Firebase Admin SDK inicializado correctamente.");
 } catch (e) {
-    console.error("FATAL: Error al parsear FIREBASE_SERVICE_ACCOUNT_JSON. Verifique el formato JSON.", e);
+    console.error("FATAL: Error al parsear FIREBASE_SERVICE_ACCOUNT_JSON. Verifique el formato JSON y el escape de caracteres.", e);
     process.exit(1);
 }
 
