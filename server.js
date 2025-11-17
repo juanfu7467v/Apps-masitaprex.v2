@@ -4,16 +4,14 @@ import dotenv from "dotenv";
 dotenv.config();
 
 // 🚨 IMPORTAR DEPENDENCIAS FIREBASE
-import { auth, db } from "./firebase-config.js"; 
+// Ahora auth, db y FieldValue se importan de firebase-config.js
+import { auth, db, FieldValue } from "./firebase-config.js"; 
 import crypto from 'crypto'; 
 import { Octokit } from "@octokit/rest";
 import axios from "axios";
 import gplay from "google-play-scraper"; 
 import https from "https"; 
 import url from 'url';
-
-// Importar FieldValue para operaciones atómicas, ya que se usa más adelante
-import { FieldValue } from 'firebase-admin/firestore'; 
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
