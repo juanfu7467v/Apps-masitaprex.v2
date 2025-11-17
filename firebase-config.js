@@ -1,19 +1,24 @@
 // firebase-config.js
 import admin from 'firebase-admin';
 
-// ⚠️ NECESARIO: Leemos el JSON de la variable de entorno y lo parseamos
-const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+// Lee el valor del Secret de Fly.io
+const serviceAccountString = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
 
-// Inicializar la aplicación de Firebase Admin
+if (!serviceAccountString) {
+    throw new Error("ERROR: La variable FIREBASE_SERVICE_ACCOUNT_JSON no está definida.");
+}
+
+// Lo convierte de texto JSON a un objeto JavaScript
+const serviceAccount = JSON.parse(serviceAccountString); 
+
+// Inicializa Firebase con el objeto
 const app = admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-  // Opcional: Si quieres conectarte a Realtime Database, añade:
-  // databaseURL: "https://TU_DATABASE_ID.firebaseio.com"
+  credential: admin.credential.cert(serviceAccount)
 });
 
-// Obtener los servicios
+// Exporta los servicios
 const auth = admin.auth(app);
 const db = admin.firestore(app);
-const FieldValue = admin.firestore.FieldValue; // Para actualizaciones atómicas
+const FieldValue = admin.firestore.FieldValue; 
 
 export { auth, db, FieldValue };
