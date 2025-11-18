@@ -27,8 +27,8 @@ RUN npm install --omit=dev
 # Copia el resto del código (incluyendo server.js)
 COPY . .
 
-# Expone el puerto que la aplicación escuchará
-EXPOSE 3000
+# Expone el puerto que la aplicación escuchará (¡Cambiado a 8080!)
+EXPOSE 8080
 
 # Comando para iniciar la aplicación (usa el script "start" de package.json)
 CMD ["npm", "start"]
