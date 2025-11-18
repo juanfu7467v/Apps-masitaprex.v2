@@ -1,34 +1,42 @@
-# Usa una imagen base oficial de Node.js (estable y ligera)
-FROM node:20-alpine
+# syntax = docker/dockerfile:1
 
-# Instalar dependencias de Chromium para Puppeteer en Alpine
-# Fuente: https://pptr.dev/troubleshooting#running-puppeteer-on-alpine
-RUN apk add --no-cache \
-    chromium \
-    nss \
-    freetype \
-    harfbuzz \
-    ca-certificates \
-    ttf-freefont \
-    ghostscript
+# Adjust NODE_VERSION as desired
+ARG NODE_VERSION=20.12.2 # Usando la versión LTS más reciente como recomendación
+FROM node:${NODE_VERSION}-slim AS base
 
-# Establecer variable de entorno para que Puppeteer sepa dónde encontrar Chromium
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+LABEL fly_launch_runtime="Node.js"
 
-# Crea y establece el directorio de trabajo dentro del contenedor
+# Node.js app lives here
 WORKDIR /app
 
-# Copia los archivos de manifiesto y dependencias
-COPY package*.json ./
+# Set production environment
+ENV NODE_ENV="production"
 
-# Instala las dependencias (solo de producción para reducir el tamaño de la imagen)
-RUN npm install --omit=dev
 
-# Copia el resto del código (incluyendo server.js)
+# Throw-away build stage to reduce size of final image
+FROM base AS build
+
+# Install packages needed to build node modules
+# El paquete python-is-python3 ya no es necesario en Node 20
+RUN apt-get update -qq && \
+    apt-get install --no-install-recommends -y build-essential pkg-config
+
+# Install node modules
+COPY package.json ./
+# Para Node.js en producción, es mejor usar `npm ci` si tienes un package-lock.json (que se supone que sí)
+# Pero `npm install` es suficiente para esta etapa de construcción
+RUN npm install
+
+# Copy application code
 COPY . .
 
-# Expone el puerto que la aplicación escuchará (¡Cambiado a 8080!)
-EXPOSE 8080
 
-# Comando para iniciar la aplicación (usa el script "start" de package.json)
-CMD ["npm", "start"]
+# Final stage for app image
+FROM base
+
+# Copy built application
+COPY --from=build /app /app
+
+# Start the server by default, this can be overwritten at runtime
+EXPOSE 3000
+CMD [ "npm", "run", "start" ]
