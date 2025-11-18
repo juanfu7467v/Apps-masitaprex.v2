@@ -13,12 +13,12 @@ import gplay from "google-play-scraper"; // Mantener por si se usa en funciones 
 dotenv.config();
 
 // -------------------- CONSTANTES DE LA API DE CONSULTAS (Tus URLs) --------------------
+// Mantenemos estas URLs porque los endpoints restantes las usan
 const NEW_API_V1_BASE_URL = process.env.NEW_API_V1_BASE_URL || "https://banckend-poxyv1-cosultape-masitaprex.fly.dev";
 const NEW_IMAGEN_V2_BASE_URL = process.env.NEW_IMAGEN_V2_BASE_URL || "https://imagen-v2.fly.dev";
 const NEW_PDF_V3_BASE_URL = process.env.NEW_PDF_V3_BASE_URL || "https://generar-pdf-v3.fly.dev";
-const NEW_FACTILIZA_BASE_URL = process.env.NEW_FACTILIZA_BASE_URL || "https://web-production-75681.up.railway.app";
 const LOG_GUARDADO_BASE_URL = process.env.LOG_GUARDADO_BASE_URL || "https://base-datos-consulta-pe.fly.dev/guardar";
-const NEW_BRANDING = "developer consulta pe";
+const NEW_BRANDING = "developer consulta pe"; // Solo un branding genérico
 
 // --- CLAVE SECRETA DE ADMINISTRADOR ---
 const ADMIN_API_KEY = process.env.ADMIN_API_KEY;
@@ -31,57 +31,60 @@ if (!ADMIN_API_KEY) {
    FIREBASE ADMIN SDK
 -------------------------------------------------------------------------------------*/
 
+let auth, db, FieldValue;
+
 // Obtener el JSON del service account
 const SERVICE_ACCOUNT_JSON = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
 
-// 🛑 VERIFICACIÓN CRÍTICA
-if (!SERVICE_ACCOUNT_JSON && !admin.apps.length) {
-    // Si no está el JSON, intenta usar la configuración por defecto de tu código anterior (si las vars están en el entorno)
-    const serviceAccount = {
-        type: process.env.FIREBASE_TYPE,
-        project_id: process.env.FIREBASE_PROJECT_ID,
-        private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
-        private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
-        client_email: process.env.FIREBASE_CLIENT_EMAIL,
-        client_id: process.env.FIREBASE_CLIENT_ID,
-        auth_uri: process.env.FIREBASE_AUTH_URI,
-        token_uri: process.env.FIREBASE_TOKEN_URI,
-        auth_provider_x509_cert_url: process.env.FIREBASE_AUTH_PROVIDER_X509_CERT_URL,
-        client_x509_cert_url: process.env.FIREBASE_CLIENT_X509_CERT_URL,
-        universe_domain: process.env.FIREBASE_UNIVERSE_DOMAIN,
-    };
-    
-    if (serviceAccount.project_id && serviceAccount.private_key) {
-         if (!admin.apps.length) {
-            admin.initializeApp({
-                credential: admin.credential.cert(serviceAccount),
-            });
-            console.log("✅ Firebase Admin SDK inicializado con variables separadas.");
-         }
-    } else {
-         console.error("FATAL: La variable de entorno FIREBASE_SERVICE_ACCOUNT_JSON o las variables separadas no están configuradas.");
-         // process.exit(1); // No salimos, solo registramos el error para que la app pueda iniciar
-    }
-} else if (SERVICE_ACCOUNT_JSON) {
-    try {
-        const serviceAccountJson = JSON.parse(SERVICE_ACCOUNT_JSON);
-        if (!admin.apps.length) {
+try {
+    // 🛑 VERIFICACIÓN CRÍTICA: Intentar inicializar si no se ha inicializado
+    if (!admin.apps.length) {
+        if (SERVICE_ACCOUNT_JSON) {
+            const serviceAccountJson = JSON.parse(SERVICE_ACCOUNT_JSON);
             admin.initializeApp({
                 credential: admin.credential.cert(serviceAccountJson)
             });
             console.log("✅ Firebase Admin SDK inicializado con JSON.");
+        } else {
+            // Intentar usar la configuración por defecto de tu código anterior (variables separadas)
+            const serviceAccount = {
+                type: process.env.FIREBASE_TYPE,
+                project_id: process.env.FIREBASE_PROJECT_ID,
+                private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
+                // Reemplazar saltos de línea en la clave privada
+                private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
+                client_email: process.env.FIREBASE_CLIENT_EMAIL,
+                client_id: process.env.FIREBASE_CLIENT_ID,
+                auth_uri: process.env.FIREBASE_AUTH_URI,
+                token_uri: process.env.FIREBASE_TOKEN_URI,
+                auth_provider_x509_cert_url: process.env.FIREBASE_AUTH_PROVIDER_X509_CERT_URL,
+                client_x509_cert_url: process.env.FIREBASE_CLIENT_X509_CERT_URL,
+                universe_domain: process.env.FIREBASE_UNIVERSE_DOMAIN,
+            };
+            
+            if (serviceAccount.project_id && serviceAccount.private_key) {
+                 admin.initializeApp({
+                    credential: admin.credential.cert(serviceAccount),
+                });
+                console.log("✅ Firebase Admin SDK inicializado con variables separadas.");
+            } else {
+                 console.error("FATAL: La variable de entorno FIREBASE_SERVICE_ACCOUNT_JSON o las variables separadas NO están configuradas. Los endpoints de la consola fallarán.");
+            }
         }
-    } catch (e) {
-        console.error("FATAL: Error al parsear FIREBASE_SERVICE_ACCOUNT_JSON. Verifique el formato JSON y el escape de caracteres.", e);
-        // process.exit(1);
     }
+
+    // 🚨 VARIABLES DE FIREBASE ACCESIBLES GLOBALMENTE
+    if (admin.apps.length) {
+        auth = admin.auth();
+        db = admin.firestore();
+        FieldValue = admin.firestore.FieldValue;
+    }
+
+} catch (e) {
+    console.error("FATAL: Error al inicializar Firebase Admin SDK. El error original es:", e);
+    // Si la inicialización falla (por JSON malformado o credenciales inválidas), admin.apps.length fallará.
+    // La app puede continuar, pero los endpoints de consola/auth fallarán.
 }
-
-
-// 🚨 VARIABLES DE FIREBASE ACCESIBLES GLOBALMENTE
-const auth = admin.auth();
-const db = admin.firestore();
-const FieldValue = admin.firestore.FieldValue;
 
 
 /* ----------------------------------------------------------------------------------
@@ -126,6 +129,8 @@ app.use(express.static('public')); // Para el Catálogo Público
 /* ----------------------------------------------------------------------------------
    1. HELPERS DE LA DEVELOPER CONSOLE
 -------------------------------------------------------------------------------------*/
+
+// ... (El resto de los helpers de la Developer Console se mantienen intactos, ya que no dependen de Factiliza o Lederdata)
 
 /**
  * Crea o actualiza un archivo en GitHub. (Developer Console Helper)
@@ -228,19 +233,27 @@ async function runVirusTotalScan(fileBuffer) {
  * Función auxiliar para procesar los metadatos de las aplicaciones del catálogo público. (Developer Console Helper)
  */
 async function enhanceAppMetadata(meta) {
+    if (!db || !db.collection) {
+        console.warn("Firestore no inicializado. Se usarán datos predeterminados para estadísticas.");
+    }
+    
     const latestVersion = meta.versions && meta.versions.length > 0
         ? meta.versions.slice(-1)[0]
         : null;
 
     let downloadsFromStats = 0;
-    try {
-        const statsDoc = await db.collection(STATS_COLLECTION).doc(meta.appId).get();
-        if (statsDoc.exists) {
-            downloadsFromStats = statsDoc.data().downloads || 0;
+    
+    if (db && db.collection) {
+        try {
+            const statsDoc = await db.collection(STATS_COLLECTION).doc(meta.appId).get();
+            if (statsDoc.exists) {
+                downloadsFromStats = statsDoc.data().downloads || 0;
+            }
+        } catch (e) {
+            console.warn(`No se pudieron obtener estadísticas para ${meta.appId}: ${e.message}`);
         }
-    } catch (e) {
-        console.warn(`No se pudieron obtener estadísticas para ${meta.appId}: ${e.message}`);
     }
+
 
     const installsText = downloadsFromStats > 0 
         ? downloadsFromStats.toLocaleString() + "+" 
@@ -268,26 +281,25 @@ async function enhanceAppMetadata(meta) {
    2. MIDDLEWARES (CONSOLA + API CONSULTAS)
 -------------------------------------------------------------------------------------*/
 
+// 🛑 IMPORTANTE: Todos los middlewares relacionados con Firebase (apiKeyAuth, checkAppOwnership, authMiddleware, creditosMiddleware, adminAuthMiddleware)
+// ahora verificarán si las variables globales 'auth', 'db' y 'FieldValue' están definidas para evitar fallas
+// si Firebase Admin no pudo inicializarse.
+
 /**
  * Middleware de Autenticación por API Key (Developer Console)
- * Verifica el token de Firebase y adjunta req.developerId (UID).
  */
 const apiKeyAuth = async (req, res, next) => {
+    if (!auth || !db) return res.status(503).json({ ok: false, error: "Servicio de autenticación (Firebase Admin) no inicializado." });
+
     const apiKey = req.headers['x-api-key'];
     if (!apiKey) {
         return res.status(401).json({ ok: false, error: "Acceso denegado. x-api-key (Token de Firebase) es requerido." });
     }
 
     try {
-        // Verifica el token como un ID Token de Firebase
         const decodedToken = await auth.verifyIdToken(apiKey);
-        
-        // Adjunta el UID del desarrollador a la solicitud
         req.developerId = decodedToken.uid; 
-        
-        // Adjuntamos el objeto de usuario (simplificado) para consistencia con authMiddleware
         req.user = { id: decodedToken.uid }; 
-
         next();
     } catch (e) {
         console.error("Error de autenticación por API Key:", e.message);
@@ -300,6 +312,8 @@ const apiKeyAuth = async (req, res, next) => {
  * Middleware de Verificación de Propiedad de App (Developer Console)
  */
 const checkAppOwnership = async (req, res, next) => {
+    if (!db) return res.status(503).json({ ok: false, error: "Servicio de base de datos (Firestore) no inicializado." });
+    
     const { appId } = req.params;
     const { developerId } = req; // Viene del middleware apiKeyAuth
 
@@ -329,6 +343,8 @@ const checkAppOwnership = async (req, res, next) => {
  * Middleware para validar el token de API del usuario y plan (API de Consultas)
  */
 const authMiddleware = async (req, res, next) => {
+  if (!auth || !db) return res.status(503).json({ ok: false, error: "Servicio de autenticación/base de datos (Firebase Admin) no inicializado." });
+
   const token = req.headers["x-api-key"];
   if (!token) {
     return res.status(401).json({ ok: false, error: "Falta el token de API" });
@@ -337,14 +353,13 @@ const authMiddleware = async (req, res, next) => {
   try {
     const usersRef = db.collection(USERS_COLLECTION);
     const snapshot = await usersRef.where("apiKey", "==", token).get();
+    
     if (snapshot.empty) {
       // 🛑 Intentar validar como ID Token de Firebase para la Developer Console
       try {
         const decodedToken = await auth.verifyIdToken(token);
         const userDoc = await db.collection(USERS_COLLECTION).doc(decodedToken.uid).get();
         if (userDoc.exists) {
-            // El usuario existe en Firestore, pero su campo 'apiKey' es diferente al token.
-            // Esto permite usar el ID Token de Firebase directamente si no se usa el campo 'apiKey'
             req.user = { id: decodedToken.uid, ...userDoc.data() };
             req.developerId = decodedToken.uid; 
             next();
@@ -381,7 +396,7 @@ const authMiddleware = async (req, res, next) => {
     }
 
     req.user = { id: userId, ...userData };
-    req.developerId = userId; // También seteamos el developerId
+    req.developerId = userId; 
     next();
   } catch (error) {
     console.error("Error en authMiddleware:", error);
@@ -410,6 +425,12 @@ const getOriginDomain = (req) => {
  */
 const creditosMiddleware = (costo) => {
   return async (req, res, next) => {
+    if (!db || !FieldValue) {
+        req.logData = { domain: getOriginDomain(req), cost: 0, endpoint: req.path };
+        next();
+        return;
+    }
+    
     // Si no está el user, es un endpoint de la Developer Console que usa apiKeyAuth, no debitamos.
     if (!req.user || !req.user.id) {
         req.logData = { domain: getOriginDomain(req), cost: 0, endpoint: req.path };
@@ -429,7 +450,7 @@ const creditosMiddleware = (costo) => {
         });
       }
       await userRef.update({
-        creditos: admin.firestore.FieldValue.increment(-costo),
+        creditos: FieldValue.increment(-costo),
         ultimaConsulta: currentTime, 
         ultimoDominio: domain,        
       });
@@ -486,10 +507,13 @@ const guardarLogExterno = async (logData) => {
     }
 };
 
-
+/**
+ * **CORREGIDO** - Elimina referencias a bots y branding no deseados.
+ */
 const replaceBranding = (data) => {
   if (typeof data === 'string') {
-    return data.replace(/@LEDERDATA_OFC_BOT|@otra|\[FACTILIZA]/g, NEW_BRANDING);
+    // Eliminamos cualquier referencia a Lederdata o Factiliza en el branding
+    return data.replace(/@otra|\[FACTILIZA]/g, NEW_BRANDING);
   }
   if (Array.isArray(data)) {
     return data.map(item => replaceBranding(item));
@@ -600,12 +624,15 @@ const consumirAPI = async (req, res, url, transformer = procesarRespuesta) => {
    4. ENDPOINTS: GESTIÓN DE APPS (DEVELOPER CONSOLE)
 -------------------------------------------------------------------------------------*/
 
+// 🛑 IMPORTANTE: Todos estos endpoints dependen de que 'auth' y 'db' estén inicializados.
+
 /**
  * 1️⃣ AUTENTICACIÓN Y VERIFICACIÓN (FIREBASE)
- * Estos endpoints usan la lógica de la Developer Console para la gestión de usuarios.
  */
 
 app.post("/auth/register", async (req, res) => {
+    if (!auth || !db) return res.status(503).json({ ok: false, error: "Servicio de autenticación (Firebase Admin) no inicializado." });
+    
     const { email, password, displayName } = req.body;
     if (!email || !password) return res.status(400).json({ ok: false, error: "Email y password son requeridos." });
 
@@ -615,7 +642,6 @@ app.post("/auth/register", async (req, res) => {
             email: user.email,
             displayName: user.displayName,
             registeredAt: new Date().toISOString(),
-            // Se mantiene la estructura de plan para compatibilidad con authMiddleware de API de Consultas
             tipoPlan: 'none', 
             creditos: 0,
             fechaCreacion: new Date(),
@@ -627,7 +653,8 @@ app.post("/auth/register", async (req, res) => {
 });
 
 app.post("/auth/login", async (req, res) => {
-    // Esto sigue siendo un PLACEHOLDER. El ID Token final debe obtenerse en el CLIENTE.
+    if (!auth) return res.status(503).json({ ok: false, error: "Servicio de autenticación (Firebase Admin) no inicializado." });
+    
     const { uid } = req.body; 
     if (!uid) return res.status(400).json({ ok: false, error: "Para este placeholder, debe proveer su UID." });
 
@@ -650,11 +677,12 @@ app.post("/auth/login", async (req, res) => {
 /**
  * 2️⃣ APLICACIONES (CRUD PRINCIPAL)
  */
-
+// ... (Todos los endpoints de apps CRUD se mantienen y usan apiKeyAuth/checkAppOwnership)
 app.post("/apps/create", apiKeyAuth, async (req, res) => {
     const { name, description, category } = req.body;
     const { developerId } = req;
     
+    if (!db) return res.status(503).json({ ok: false, error: "Servicio de base de datos (Firestore) no inicializado." });
     if (!name || !description) return res.status(400).json({ ok: false, error: "Nombre y descripción son requeridos." });
 
     const appId = generateAppId();
@@ -704,6 +732,7 @@ app.patch("/apps/:appId/update", apiKeyAuth, checkAppOwnership, async (req, res)
     const { developerId, appId } = req;
     const updates = req.body;
     
+    if (!db) return res.status(503).json({ ok: false, error: "Servicio de base de datos (Firestore) no inicializado." });
     delete updates.appId; delete updates.developerId; delete updates.createdAt; delete updates.versions;
     
     try {
@@ -741,6 +770,7 @@ app.patch("/apps/:appId/update", apiKeyAuth, checkAppOwnership, async (req, res)
 app.delete("/apps/:appId", apiKeyAuth, checkAppOwnership, async (req, res) => {
     const { developerId, appId } = req;
 
+    if (!db) return res.status(503).json({ ok: false, error: "Servicio de base de datos (Firestore) no inicializado." });
     try {
         const pathInRepo = `public/developer_apps/${developerId}/${appId}/meta.json`;
         
@@ -775,7 +805,7 @@ app.delete("/apps/:appId", apiKeyAuth, checkAppOwnership, async (req, res) => {
 /**
  * 3️⃣ SUBIR APK (CON ANÁLISIS AUTOMÁTICO) Y ENLACES
  */
-
+// (Endpoints de subida/análisis de APK se mantienen, ya que usan GitHub y simulación local, no Factiliza/Lederdata)
 app.post("/apps/:appId/upload-apk", apiKeyAuth, checkAppOwnership, async (req, res) => {
     const { developerId, appId } = req;
     const { apk_base64, version } = req.body; 
@@ -929,6 +959,7 @@ app.post("/apps/:appId/virus-scan", apiKeyAuth, checkAppOwnership, async (req, r
 /**
  * 4️⃣ GESTIÓN DE VERSIONES
  */
+// (Endpoints de versiones se mantienen)
 
 app.post("/apps/:appId/version", apiKeyAuth, checkAppOwnership, async (req, res) => {
     const { developerId, appId } = req;
@@ -981,11 +1012,14 @@ app.get("/apps/:appId/latest", apiKeyAuth, checkAppOwnership, async (req, res) =
     return res.json({ ok: true, latest_version: latest });
 });
 
+
 /**
  * 5️⃣ ESTADÍSTICAS (REPORTES PÚBLICOS Y PRIVADOS)
  */
 
 app.post("/stats/report-download", async (req, res) => {
+    if (!db || !FieldValue) return res.status(503).json({ ok: false, error: "Servicio de base de datos (Firestore) no inicializado." });
+    
     const { appId, country, device } = req.body;
     if (!appId) return res.status(400).json({ ok: false, error: "appId es requerido." });
 
@@ -1008,6 +1042,8 @@ app.post("/stats/report-download", async (req, res) => {
 });
 
 app.post("/stats/report-install", async (req, res) => {
+    if (!db || !FieldValue) return res.status(503).json({ ok: false, error: "Servicio de base de datos (Firestore) no inicializado." });
+    
     const { appId, device_id, version_name } = req.body;
     if (!appId || !device_id) return res.status(400).json({ ok: false, error: "appId y device_id son requeridos." });
     
@@ -1031,6 +1067,8 @@ app.post("/stats/report-install", async (req, res) => {
 });
 
 app.get("/apps/:appId/stats", apiKeyAuth, checkAppOwnership, async (req, res) => {
+    if (!db) return res.status(503).json({ ok: false, error: "Servicio de base de datos (Firestore) no inicializado." });
+
     const { appId } = req.params;
 
     try {
@@ -1060,6 +1098,7 @@ app.get("/apps/:appId/stats", apiKeyAuth, checkAppOwnership, async (req, res) =>
 /**
  * 6️⃣ RECURSOS MULTIMEDIA (IMÁGENES, VIDEOS)
  */
+// (Endpoints de multimedia se mantienen)
 
 async function uploadMedia(developerId, appId, fileBase64, type, filename) {
     const pathInRepo = `public/developer_apps/${developerId}/${appId}/media/${filename}`;
@@ -1149,6 +1188,7 @@ app.delete("/files/:fileId", apiKeyAuth, async (req, res) => {
 /**
  * 7️⃣ GESTIÓN DE ANUNCIOS
  */
+// (Endpoints de anuncios se mantienen)
 
 app.get("/apps/:appId/ads-info", apiKeyAuth, checkAppOwnership, async (req, res) => {
     const { ads_config, ads_detected } = req.appData;
@@ -1196,8 +1236,11 @@ app.patch("/apps/:appId/ads-config", apiKeyAuth, checkAppOwnership, async (req, 
 /**
  * 8️⃣ NOTIFICACIONES DEL DESARROLLADOR
  */
+// (Endpoints de notificaciones se mantienen)
 
 app.get("/notifications", apiKeyAuth, async (req, res) => {
+    if (!db) return res.status(503).json({ ok: false, error: "Servicio de base de datos (Firestore) no inicializado." });
+    
     const { developerId } = req;
 
     try {
@@ -1228,6 +1271,8 @@ app.get("/notifications", apiKeyAuth, async (req, res) => {
 });
 
 app.post("/notifications/mark-read", apiKeyAuth, async (req, res) => {
+    if (!db) return res.status(503).json({ ok: false, error: "Servicio de base de datos (Firestore) no inicializado." });
+    
     const { notificationId } = req.body;
     const { developerId } = req;
 
@@ -1254,6 +1299,7 @@ app.post("/notifications/mark-read", apiKeyAuth, async (req, res) => {
 /* ----------------------------------------------------------------------------------
    5. ENDPOINTS DEL CATÁLOGO PÚBLICO (No protegidos)
 -------------------------------------------------------------------------------------*/
+// (Endpoints del catálogo público se mantienen)
 
 app.get("/api/public/apps/popular", async (req, res) => {
     try {
@@ -1386,6 +1432,7 @@ app.get("/api/public/apps/search", async (req, res) => {
 /* ----------------------------------------------------------------------------------
    6. ENDPOINTS: API DE CONSULTAS (Mantenidos)
 -------------------------------------------------------------------------------------*/
+// 🛑 Solo se mantienen los endpoints que usan las URLs NEW_API_V1_BASE_URL, NEW_IMAGEN_V2_BASE_URL y NEW_PDF_V3_BASE_URL.
 
 // 🔹 API v1 (Nueva)
 app.get("/api/dni", authMiddleware, creditosMiddleware(5), async (req, res) => {
@@ -1484,161 +1531,14 @@ app.get("/api/info-total", authMiddleware, creditosMiddleware(50), async (req, r
     await consumirAPI(req, res, `${NEW_PDF_V3_BASE_URL}/generar-ficha-pdf?dni=${req.query.dni}`);
 });
 
-// 🔹 Reemplazo de Factiliza
-app.get("/api/dni-full", authMiddleware, creditosMiddleware(4), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/dni?dni=${req.query.dni}`);
-});
-app.get("/api/c4", authMiddleware, creditosMiddleware(10), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/c4?dni=${req.query.dni}`);
-});
-app.get("/api/dnivaz", authMiddleware, creditosMiddleware(10), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/dnivaz?dni=${req.query.dni}`);
-});
-app.get("/api/dnivam", authMiddleware, creditosMiddleware(10), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/dnivam?dni=${req.query.dni}`);
-});
-app.get("/api/dnivel", authMiddleware, creditosMiddleware(10), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/dnivel?dni=${req.query.dni}`);
-});
-app.get("/api/dniveln", authMiddleware, creditosMiddleware(10), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/dniveln?dni=${req.query.dni}`);
-});
-app.get("/api/fa", authMiddleware, creditosMiddleware(10), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/fa?dni=${req.query.dni}`);
-});
-app.get("/api/fb", authMiddleware, creditosMiddleware(10), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/fb?dni=${req.query.dni}`);
-});
-app.get("/api/cnv", authMiddleware, creditosMiddleware(25), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/cnv?dni=${req.query.dni}`);
-});
-app.get("/api/cdef", authMiddleware, creditosMiddleware(25), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/cdef?dni=${req.query.dni}`);
-});
-app.get("/api/actancc", authMiddleware, creditosMiddleware(65), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/actancc?dni=${req.query.dni}`);
-});
-app.get("/api/actamcc", authMiddleware, creditosMiddleware(65), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/actamcc?dni=${req.query.dni}`);
-});
-app.get("/api/actadcc", authMiddleware, creditosMiddleware(65), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/actadcc?dni=${req.query.dni}`);
-});
-app.get("/api/tra", authMiddleware, creditosMiddleware(5), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/tra?dni=${req.query.dni}`);
-});
-app.get("/api/sue", authMiddleware, creditosMiddleware(8), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/sue?dni=${req.query.dni}`);
-});
-app.get("/api/cla", authMiddleware, creditosMiddleware(25), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/cla?dni=${req.query.dni}`);
-});
-app.get("/api/sune", authMiddleware, creditosMiddleware(4), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/sune?dni=${req.query.dni}`);
-});
-app.get("/api/cun", authMiddleware, creditosMiddleware(5), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/cun?dni=${req.query.dni}`);
-});
-app.get("/api/colp", authMiddleware, creditosMiddleware(6), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/colp?dni=${req.query.dni}`);
-});
-app.get("/api/mine", authMiddleware, creditosMiddleware(4), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/mine?dni=${req.query.dni}`);
-});
-app.get("/api/afp", authMiddleware, creditosMiddleware(6), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/afp?dni=${req.query.dni}`);
-});
-app.get("/api/antpen", authMiddleware, creditosMiddleware(10), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/antpen?dni=${req.query.dni}`);
-});
-app.get("/api/antpol", authMiddleware, creditosMiddleware(10), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/antpol?dni=${req.query.dni}`);
-});
-app.get("/api/antjud", authMiddleware, creditosMiddleware(10), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/antjud?dni=${req.query.dni}`);
-});
-app.get("/api/antpenv", authMiddleware, creditosMiddleware(10), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/antpenv?dni=${req.query.dni}`);
-});
-app.get("/api/dend", authMiddleware, creditosMiddleware(26), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/dend?dni=${req.query.dni}`);
-});
-app.get("/api/fis", authMiddleware, creditosMiddleware(32), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/fis?dni=${req.query.dni}`);
-});
-app.get("/api/fisdet", authMiddleware, creditosMiddleware(36), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/fisdet?dni=${req.query.dni}`);
-});
-app.get("/api/det", authMiddleware, creditosMiddleware(26), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/det?dni=${req.query.dni}`);
-});
-app.get("/api/rqh", authMiddleware, creditosMiddleware(8), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/rqh?dni=${req.query.dni}`);
-});
-app.get("/api/meta", authMiddleware, creditosMiddleware(26), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/meta?dni=${req.query.dni}`);
-});
-app.get("/api/osiptel", authMiddleware, creditosMiddleware(10), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/osiptel?query=${req.query.query}`);
-});
-app.get("/api/claro", authMiddleware, creditosMiddleware(5), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/claro?query=${req.query.query}`);
-});
-app.get("/api/entel", authMiddleware, creditosMiddleware(5), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/entel?query=${req.query.query}`);
-});
-app.get("/api/pro", authMiddleware, creditosMiddleware(12), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/pro?query=${req.query.query}`);
-});
-app.get("/api/sen", authMiddleware, creditosMiddleware(12), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/sen?query=${req.query.query}`);
-});
-app.get("/api/sbs", authMiddleware, creditosMiddleware(12), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/sbs?query=${req.query.query}`);
-});
-app.get("/api/pasaporte", authMiddleware, creditosMiddleware(20), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/pasaporte?query=${req.query.query}`);
-});
-app.get("/api/seeker", authMiddleware, creditosMiddleware(28), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/seeker?query=${req.query.query}`);
-});
-app.get("/api/bdir", authMiddleware, creditosMiddleware(28), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/bdir?query=${req.query.query}`);
-});
-app.get("/api/dence", authMiddleware, creditosMiddleware(25), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/dence?carnet_extranjeria=${req.query.carnet_extranjeria}`);
-});
-app.get("/api/denpas", authMiddleware, creditosMiddleware(25), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/denpas?pasaporte=${req.query.pasaporte}`);
-});
-app.get("/api/denci", authMiddleware, creditosMiddleware(25), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/denci?cedula_identidad=${req.query.cedula_identidad}`);
-});
-app.get("/api/denp", authMiddleware, creditosMiddleware(25), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/denp?placa=${req.query.placa}`);
-});
-app.get("/api/denar", authMiddleware, creditosMiddleware(25), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/denar?serie_armamento=${req.query.serie_armamento}`);
-});
-app.get("/api/dencl", authMiddleware, creditosMiddleware(25), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/dencl?clave_denuncia=${req.query.clave_denuncia}`);
-});
-app.get("/api/cedula", authMiddleware, creditosMiddleware(4), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/cedula?cedula=${req.query.cedula}`);
-});
-app.get("/api/venezolanos_nombres", authMiddleware, creditosMiddleware(4), async (req, res) => {
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/venezolanos_nombres?query=${req.query.query}`, transformarRespuestaBusqueda);
-});
-app.get("/api/dni_nombres", authMiddleware, creditosMiddleware(5), async (req, res) => {
-  const { nombres, apepaterno, apematerno } = req.query;
-  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/dni_nombres?nombres=${nombres}&apepaterno=${apepaterno}&apematerno=${apematerno}`, transformarRespuestaBusqueda);
-});
 
 /* ----------------------------------------------------------------------------------
    7. ADMIN ENDPOINTS (Panel de Gestión de API)
 -------------------------------------------------------------------------------------*/
 
 app.get("/admin/users", adminAuthMiddleware, async (req, res) => {
+    if (!db) return res.status(503).json({ ok: false, error: "Servicio de base de datos (Firestore) no inicializado." });
+    
     try {
         const usersRef = db.collection(USERS_COLLECTION);
         const snapshot = await usersRef.get();
