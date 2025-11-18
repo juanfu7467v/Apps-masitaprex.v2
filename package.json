@@ -16,8 +16,8 @@
     "morgan": "^1.10.0",
     "node-fetch": "^3.3.2",
     "axios": "^1.7.7",
-    "@octokit/rest": "^20.1.1",  <-- ¡ESTA ES LA LÍNEA AGREGADA!
-    "google-play-scraper": "^10.0.0" <-- AÑADIDO: Si usas 'gplay' en server.mjs, debe estar aquí.
+    "@octokit/rest": "^20.1.1",
+    "google-play-scraper": "^10.0.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.0"
