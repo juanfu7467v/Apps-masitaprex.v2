@@ -1044,22 +1044,20 @@ app.get("/api/public/apps/categories", async (req, res) => {
 /**
  * 🚀 ENDPOINT CORREGIDO: Cargar todas las apps disponibles (Usando Git Tree para evitar truncamiento)
  * GET /api/public/apps/all
+ * * **CORRECCIÓN**: Asegura la descarga del blob del archivo meta.json
  */
 app.get("/api/public/apps/all", async (req, res) => {
+    let branchName = 'main';
     try {
         // 1. Obtener el SHA de la rama principal (main o master)
-        const branchResponse = await octokit.repos.getBranch({
-            owner: G_OWNER,
-            repo: G_REPO,
-            branch: 'main', // Asume 'main' como rama principal. Si no funciona, prueba 'master'.
-        }).catch(async () => {
+        let branchResponse;
+        try {
+            branchResponse = await octokit.repos.getBranch({ owner: G_OWNER, repo: G_REPO, branch: 'main' });
+        } catch (e) {
             // Intentar 'master' si 'main' falla
-            return await octokit.repos.getBranch({
-                owner: G_OWNER,
-                repo: G_REPO,
-                branch: 'master',
-            });
-        });
+            branchResponse = await octokit.repos.getBranch({ owner: G_OWNER, repo: G_REPO, branch: 'master' });
+            branchName = 'master';
+        }
 
         const treeSha = branchResponse.data.commit.commit.tree.sha;
 
@@ -1073,19 +1071,20 @@ app.get("/api/public/apps/all", async (req, res) => {
 
         // 3. Filtrar las rutas para encontrar todos los archivos meta.json dentro de CATALOG_PATH
         const metaFiles = treeResponse.data.tree.filter(item => 
-            item.path.startsWith(CATALOG_PATH + '/') && item.path.endsWith('/meta.json')
+            item.path.startsWith(CATALOG_PATH + '/') && item.path.endsWith('/meta.json') && item.type === 'blob'
         );
 
         const allAppsPromises = metaFiles.map(async (file) => {
             try {
-                // Descargar el contenido de cada meta.json
-                const metaRaw = await octokit.repos.getContent({
+                // Descargar el contenido del blob usando el SHA del item
+                const blobResponse = await octokit.git.getBlob({
                     owner: G_OWNER,
                     repo: G_REPO,
-                    path: file.path,
+                    file_sha: file.sha,
                 });
                 
-                const meta = JSON.parse(Buffer.from(metaRaw.data.content, "base64").toString("utf8"));
+                // El contenido del blob está en base64
+                const meta = JSON.parse(Buffer.from(blobResponse.data.content, "base64").toString("utf8"));
                 
                 // Omitir aplicaciones que estén marcadas como no públicas
                 if (meta.isPublic === false) return null;
@@ -1106,7 +1105,7 @@ app.get("/api/public/apps/all", async (req, res) => {
             ok: true, 
             count: allApps.length, 
             apps: allApps, 
-            message: "Catálogo completo de aplicaciones públicas cargado utilizando Git Tree (carga no truncada)." 
+            message: `Catálogo completo de aplicaciones públicas cargado utilizando Git Tree de la rama '${branchName}' (carga no truncada).` 
         });
     } catch (e) {
         if (e.status === 404) return res.json({ ok: true, apps: [], message: "El repositorio o el catálogo público no existen." });
