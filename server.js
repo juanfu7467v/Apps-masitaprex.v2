@@ -4,76 +4,131 @@ import * as admin from 'firebase-admin'; // 🚨 IMPORTADO EL SDK ADMIN
 import crypto from 'crypto'; 
 import { Octokit } from "@octokit/rest";
 import axios from "axios";
-import gplay from "google-play-scraper"; 
 import https from "https"; 
 import url from 'url';
+import cors from "cors";
+import gplay from "google-play-scraper"; // Mantener por si se usa en funciones futuras
 
-// Cargar variables de entorno (útil para desarrollo local, en Fly.io se inyectan directamente)
-// Esto lee: BASE_URL, FIREBASE_SERVICE_ACCOUNT_JSON, GITHUB_OWNER, GITHUB_REPO, GITHUB_TOKEN, VIRUSTOTAL_API_KEY
+// Cargar variables de entorno
 dotenv.config();
 
-/* --------- Inicialización de Firebase Admin SDK --------- */
-// Obtener el JSON de la variable de entorno
-const SERVICE_ACCOUNT_JSON = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+// -------------------- CONSTANTES DE LA API DE CONSULTAS (Tus URLs) --------------------
+const NEW_API_V1_BASE_URL = process.env.NEW_API_V1_BASE_URL || "https://banckend-poxyv1-cosultape-masitaprex.fly.dev";
+const NEW_IMAGEN_V2_BASE_URL = process.env.NEW_IMAGEN_V2_BASE_URL || "https://imagen-v2.fly.dev";
+const NEW_PDF_V3_BASE_URL = process.env.NEW_PDF_V3_BASE_URL || "https://generar-pdf-v3.fly.dev";
+const NEW_FACTILIZA_BASE_URL = process.env.NEW_FACTILIZA_BASE_URL || "https://web-production-75681.up.railway.app";
+const LOG_GUARDADO_BASE_URL = process.env.LOG_GUARDADO_BASE_URL || "https://base-datos-consulta-pe.fly.dev/guardar";
+const NEW_BRANDING = "developer consulta pe";
 
-if (!SERVICE_ACCOUNT_JSON) {
-    console.error("FATAL: La variable de entorno FIREBASE_SERVICE_ACCOUNT_JSON no está configurada.");
-    process.exit(1);
+// --- CLAVE SECRETA DE ADMINISTRADOR ---
+const ADMIN_API_KEY = process.env.ADMIN_API_KEY;
+if (!ADMIN_API_KEY) {
+  console.error("FATAL ERROR: ADMIN_API_KEY no está definida en el entorno. Acceso al panel deshabilitado.");
 }
 
-try {
-    // La clave es que el JSON esté bien formado en la variable de entorno para que JSON.parse funcione
-    const serviceAccount = JSON.parse(SERVICE_ACCOUNT_JSON);
-    
-    // Inicializar la aplicación de Firebase
-    admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount)
-    });
-    console.log("✅ Firebase Admin SDK inicializado correctamente.");
-} catch (e) {
-    console.error("FATAL: Error al parsear FIREBASE_SERVICE_ACCOUNT_JSON. Verifique el formato JSON y el escape de caracteres.", e);
-    process.exit(1);
-}
-
-// 🚨 VARIABLES DE FIREBASE ACCESIBLES GLOBALMENTE
-// Las importaciones se reemplazan por las referencias directas del SDK Admin inicializado.
-const auth = admin.auth();
-const db = admin.firestore();
-const FieldValue = admin.firestore.FieldValue; // Se mantiene la referencia para las operaciones atómicas
 
 /* ----------------------------------------------------------------------------------
-   CÓDIGO PRINCIPAL DEL SERVIDOR
+   FIREBASE ADMIN SDK
+-------------------------------------------------------------------------------------*/
+
+// Obtener el JSON del service account
+const SERVICE_ACCOUNT_JSON = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+
+// 🛑 VERIFICACIÓN CRÍTICA
+if (!SERVICE_ACCOUNT_JSON && !admin.apps.length) {
+    // Si no está el JSON, intenta usar la configuración por defecto de tu código anterior (si las vars están en el entorno)
+    const serviceAccount = {
+        type: process.env.FIREBASE_TYPE,
+        project_id: process.env.FIREBASE_PROJECT_ID,
+        private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
+        private_key: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
+        client_email: process.env.FIREBASE_CLIENT_EMAIL,
+        client_id: process.env.FIREBASE_CLIENT_ID,
+        auth_uri: process.env.FIREBASE_AUTH_URI,
+        token_uri: process.env.FIREBASE_TOKEN_URI,
+        auth_provider_x509_cert_url: process.env.FIREBASE_AUTH_PROVIDER_X509_CERT_URL,
+        client_x509_cert_url: process.env.FIREBASE_CLIENT_X509_CERT_URL,
+        universe_domain: process.env.FIREBASE_UNIVERSE_DOMAIN,
+    };
+    
+    if (serviceAccount.project_id && serviceAccount.private_key) {
+         if (!admin.apps.length) {
+            admin.initializeApp({
+                credential: admin.credential.cert(serviceAccount),
+            });
+            console.log("✅ Firebase Admin SDK inicializado con variables separadas.");
+         }
+    } else {
+         console.error("FATAL: La variable de entorno FIREBASE_SERVICE_ACCOUNT_JSON o las variables separadas no están configuradas.");
+         // process.exit(1); // No salimos, solo registramos el error para que la app pueda iniciar
+    }
+} else if (SERVICE_ACCOUNT_JSON) {
+    try {
+        const serviceAccountJson = JSON.parse(SERVICE_ACCOUNT_JSON);
+        if (!admin.apps.length) {
+            admin.initializeApp({
+                credential: admin.credential.cert(serviceAccountJson)
+            });
+            console.log("✅ Firebase Admin SDK inicializado con JSON.");
+        }
+    } catch (e) {
+        console.error("FATAL: Error al parsear FIREBASE_SERVICE_ACCOUNT_JSON. Verifique el formato JSON y el escape de caracteres.", e);
+        // process.exit(1);
+    }
+}
+
+
+// 🚨 VARIABLES DE FIREBASE ACCESIBLES GLOBALMENTE
+const auth = admin.auth();
+const db = admin.firestore();
+const FieldValue = admin.firestore.FieldValue;
+
+
+/* ----------------------------------------------------------------------------------
+   CONSTANTES Y CONFIGURACIONES DE DEVELOPER CONSOLE
+-------------------------------------------------------------------------------------*/
+
+// Se asume que estas variables de entorno también están configuradas en Fly.io
+const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
+const G_OWNER = process.env.GITHUB_OWNER; // Ej: 'tu-usuario-github'
+const G_REPO = process.env.GITHUB_REPO; // Ej: 'nombre-del-repositorio'
+const VIRUSTOTAL_API_KEY = process.env.VIRUSTOTAL_API_KEY; 
+const BASE_URL = process.env.BASE_URL || 'https://apps-masitaprex-v2.fly.dev'; 
+
+// Colecciones de Firestore (Developer Console)
+const USERS_COLLECTION = 'usuarios';
+const APPS_COLLECTION = 'developer_apps';
+const STATS_COLLECTION = 'app_stats';
+
+// Agente HTTPS para axios
+const httpsAgent = new https.Agent({ rejectUnauthorized: false });
+
+
+/* ----------------------------------------------------------------------------------
+   SERVIDOR EXPRESS
 -------------------------------------------------------------------------------------*/
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
 
-// Mantener la solución de archivos estáticos para el Catálogo Público
-app.use(express.static('public'));
+// 🟢 Configuración de CORS
+const corsOptions = {
+  origin: "*", 
+  methods: "GET,HEAD,PUT,PATCH,POST,DELETE", 
+  allowedHeaders: ["Content-Type", "x-api-key", "x-admin-key"], 
+  exposedHeaders: ["x-api-key", "x-admin-key"],
+  credentials: true, 
+};
 
-/* --------- Configs & Global Constants --------- */
-// Se asume que estas variables de entorno también están configuradas en Fly.io
-const octokit = new Octokit({ auth: process.env.GITHUB_TOKEN });
-const G_OWNER = process.env.GITHUB_OWNER; // Ej: 'tu-usuario-github'
-const G_REPO = process.env.GITHUB_REPO; // Ej: 'nombre-del-repositorio'
+app.use(cors(corsOptions)); 
+app.use(express.static('public')); // Para el Catálogo Público
 
-// Colecciones de Firestore
-const USERS_COLLECTION = 'usuarios';
-const APPS_COLLECTION = 'developer_apps';
-const STATS_COLLECTION = 'app_stats';
+/* ----------------------------------------------------------------------------------
+   1. HELPERS DE LA DEVELOPER CONSOLE
+-------------------------------------------------------------------------------------*/
 
-const VIRUSTOTAL_API_KEY = process.env.VIRUSTOTAL_API_KEY; 
-const BASE_URL = process.env.BASE_URL || 'https://apps-masitaprex-v2.fly.dev'; 
-
-// Agente HTTPS para axios (necesario si la URL del APK es HTTPS y se usa Node.js antiguo)
-const httpsAgent = new https.Agent({ rejectUnauthorized: false });
-
-/* --------- Helpers GitHub --------- */
 /**
- * Crea o actualiza un archivo en GitHub.
- * @param {string} pathInRepo - Ruta dentro del repositorio (e.g., public/apps/id/file.json)
- * @param {string} contentBase64 - Contenido codificado en base64
- * @param {string} message - Mensaje del commit
+ * Crea o actualiza un archivo en GitHub. (Developer Console Helper)
  */
 async function createOrUpdateGithubFile(pathInRepo, contentBase64, message) {
   try {
@@ -95,7 +150,7 @@ async function createOrUpdateGithubFile(pathInRepo, contentBase64, message) {
 }
 
 /**
- * Elimina un archivo en GitHub.
+ * Elimina un archivo en GitHub. (Developer Console Helper)
  */
 async function deleteGithubFile(pathInRepo, message) {
   try {
@@ -112,16 +167,14 @@ async function deleteGithubFile(pathInRepo, message) {
 }
 
 /**
- * Genera un ID corto único para las apps.
+ * Genera un ID corto único para las apps. (Developer Console Helper)
  */
 function generateAppId() {
     return 'app_' + crypto.randomBytes(8).toString('hex');
 }
 
 /**
- * Convierte tamaño en bytes a MB y formatea la cadena.
- * @param {number} bytes - Tamaño del archivo en bytes.
- * @returns {string} - Tamaño formateado (e.g., "54.2 MB" o "0.8 MB").
+ * Convierte tamaño en bytes a MB y formatea la cadena. (Developer Console Helper)
  */
 function formatBytesToMB(bytes) {
     if (bytes === 0) return '0 MB';
@@ -129,10 +182,95 @@ function formatBytesToMB(bytes) {
     return mb.toFixed(1) + ' MB';
 }
 
-/* --------- Middleware de Autenticación por API Key --------- */
 /**
- * Extrae y valida la API Key (el token de Firebase) del header.
- * Si es válido, adjunta el UID del desarrollador a req.developerId
+ * Placeholder para la detección de anuncios. (Developer Console Helper)
+ */
+function analyzeAdsFromBinary(apkData) {
+    const hasAds = apkData.length % 2 === 0; 
+    return {
+        ads_detected: hasAds,
+        detected_sdks: hasAds ? ["admob", "unity-ads"] : []
+    };
+}
+
+/**
+ * Placeholder para el escaneo de VirusTotal. (Developer Console Helper)
+ */
+async function runVirusTotalScan(fileBuffer) {
+    if (!VIRUSTOTAL_API_KEY) {
+        return { status: "skipped", message: "VIRUSTOTAL_API_KEY no configurada." };
+    }
+    
+    const sizeInMB = fileBuffer.length / (1024 * 1024);
+    
+    if (sizeInMB > 32) {
+         return { 
+            scan_status: "skipped", 
+            message: "El archivo es demasiado grande ( > 32MB) para la API gratuita de VirusTotal.", 
+            malicious: 0, 
+            suspicious: 0, 
+            undetected: 0 
+        };
+    }
+
+    // Simulación de escaneo exitoso
+    const results = {
+        scan_status: "completed",
+        malicious: sizeInMB > 10 ? 1 : 0, 
+        suspicious: 0,
+        undetected: 68
+    };
+
+    return results;
+}
+
+/**
+ * Función auxiliar para procesar los metadatos de las aplicaciones del catálogo público. (Developer Console Helper)
+ */
+async function enhanceAppMetadata(meta) {
+    const latestVersion = meta.versions && meta.versions.length > 0
+        ? meta.versions.slice(-1)[0]
+        : null;
+
+    let downloadsFromStats = 0;
+    try {
+        const statsDoc = await db.collection(STATS_COLLECTION).doc(meta.appId).get();
+        if (statsDoc.exists) {
+            downloadsFromStats = statsDoc.data().downloads || 0;
+        }
+    } catch (e) {
+        console.warn(`No se pudieron obtener estadísticas para ${meta.appId}: ${e.message}`);
+    }
+
+    const installsText = downloadsFromStats > 0 
+        ? downloadsFromStats.toLocaleString() + "+" 
+        : meta.installs || "0+"; 
+
+    const sizeInBytes = latestVersion?.apk_size || 0;
+
+    return {
+        appId: meta.appId,
+        name: meta.name || meta.title,
+        description: meta.summary || meta.description,
+        icon: meta.iconUrl || meta.icon,
+        category: meta.category || meta.genre || 'General',
+        score: meta.score,
+        ratings: meta.ratings,
+        installs: installsText, 
+        size_mb: formatBytesToMB(sizeInBytes), 
+        version: latestVersion?.version_name || meta.version || 'N/A',
+        updatedAt: meta.updatedAt || meta.updated
+    };
+}
+
+
+/* ----------------------------------------------------------------------------------
+   2. MIDDLEWARES (CONSOLA + API CONSULTAS)
+-------------------------------------------------------------------------------------*/
+
+/**
+ * Middleware de Autenticación por API Key (Developer Console)
+ * Verifica el token de Firebase y adjunta req.developerId (UID).
  */
 const apiKeyAuth = async (req, res, next) => {
     const apiKey = req.headers['x-api-key'];
@@ -147,9 +285,8 @@ const apiKeyAuth = async (req, res, next) => {
         // Adjunta el UID del desarrollador a la solicitud
         req.developerId = decodedToken.uid; 
         
-        // Se puede hacer una verificación adicional en Firestore si el usuario está activo, etc.
-        // const userDoc = await db.collection(USERS_COLLECTION).doc(req.developerId).get();
-        // if (!userDoc.exists) throw new Error("Usuario no registrado en Firestore.");
+        // Adjuntamos el objeto de usuario (simplificado) para consistencia con authMiddleware
+        req.user = { id: decodedToken.uid }; 
 
         next();
     } catch (e) {
@@ -158,9 +295,9 @@ const apiKeyAuth = async (req, res, next) => {
     }
 };
 
-/* --------- Middleware de Verificación de Propiedad de App --------- */
+
 /**
- * Verifica que el developerId autenticado sea el dueño del appId.
+ * Middleware de Verificación de Propiedad de App (Developer Console)
  */
 const checkAppOwnership = async (req, res, next) => {
     const { appId } = req.params;
@@ -178,7 +315,6 @@ const checkAppOwnership = async (req, res, next) => {
             return res.status(403).json({ ok: false, error: "Acceso denegado. No eres el dueño de esta aplicación." });
         }
         
-        // Adjuntar el objeto de la app para no tener que buscarlo de nuevo
         req.appData = doc.data(); 
         next();
 
@@ -188,73 +324,321 @@ const checkAppOwnership = async (req, res, next) => {
     }
 };
 
-/* ----------------------------------------------------------------------------------
-   1️⃣ AUTENTICACIÓN Y VERIFICACIÓN (FIREBASE)
--------------------------------------------------------------------------------------*/
-
-// NOTA: El registro y el login se hacen normalmente con el SDK de cliente. 
-// Aquí simulamos un endpoint que crea el usuario y le da un token (solo para testing, no es flujo real)
 
 /**
- * Simula el registro: Crea un usuario en Firebase Auth y genera un token.
- * En un sistema real, esto se manejaría en el frontend con el SDK de Cliente.
+ * Middleware para validar el token de API del usuario y plan (API de Consultas)
  */
+const authMiddleware = async (req, res, next) => {
+  const token = req.headers["x-api-key"];
+  if (!token) {
+    return res.status(401).json({ ok: false, error: "Falta el token de API" });
+  }
+
+  try {
+    const usersRef = db.collection(USERS_COLLECTION);
+    const snapshot = await usersRef.where("apiKey", "==", token).get();
+    if (snapshot.empty) {
+      // 🛑 Intentar validar como ID Token de Firebase para la Developer Console
+      try {
+        const decodedToken = await auth.verifyIdToken(token);
+        const userDoc = await db.collection(USERS_COLLECTION).doc(decodedToken.uid).get();
+        if (userDoc.exists) {
+            // El usuario existe en Firestore, pero su campo 'apiKey' es diferente al token.
+            // Esto permite usar el ID Token de Firebase directamente si no se usa el campo 'apiKey'
+            req.user = { id: decodedToken.uid, ...userDoc.data() };
+            req.developerId = decodedToken.uid; 
+            next();
+            return;
+        } else {
+             return res.status(403).json({ ok: false, error: "Token inválido (Usuario no registrado en Firestore)." });
+        }
+      } catch (e) {
+         return res.status(403).json({ ok: false, error: "Token inválido (No es un API Key o un ID Token válido)." });
+      }
+    }
+
+    const userDoc = snapshot.docs[0];
+    const userData = userDoc.data();
+    const userId = userDoc.id;
+
+    // Lógica de validación de plan (API de Consultas)
+    if (userData.tipoPlan === "creditos" && (!userData.creditos || userData.creditos <= 0)) {
+        return res.status(402).json({ ok: false, error: "No te quedan créditos, recarga tu plan para seguir consultando", });
+    }
+
+    if (userData.tipoPlan === "ilimitado") {
+        const fechaActivacion = userData.fechaActivacion ? userData.fechaActivacion.toDate() : null;
+        const duracion = userData.duracionDias || 0;
+        if (fechaActivacion && duracion > 0) {
+            const fechaFin = new Date(fechaActivacion);
+            fechaFin.setDate(fechaFin.getDate() + duracion);
+            if (new Date() > fechaFin) {
+                 return res.status(403).json({ ok: false, error: "Sorpresa, tu plan ilimitado ha vencido, renueva tu plan para seguir consultando", });
+            }
+        } else {
+             return res.status(403).json({ ok: false, error: "Tu plan ilimitado no es válido, por favor contacta soporte", });
+        }
+    }
+
+    req.user = { id: userId, ...userData };
+    req.developerId = userId; // También seteamos el developerId
+    next();
+  } catch (error) {
+    console.error("Error en authMiddleware:", error);
+    res.status(500).json({ ok: false, error: "Error interno al validar el token" });
+  }
+};
+
+
+/**
+ * NUEVA FUNCIÓN: Extrae el dominio de origen de la petición.
+ */
+const getOriginDomain = (req) => {
+  const origin = req.headers.origin || req.headers.referer;
+  if (!origin) return "Unknown/Direct Access";
+  try {
+    const parsedUrl = new url.URL(origin);
+    return parsedUrl.host; 
+  } catch (e) {
+    return origin; 
+  }
+};
+
+
+/**
+ * Middleware para gestionar créditos y actualizar la última consulta y el dominio de origen. (API de Consultas)
+ */
+const creditosMiddleware = (costo) => {
+  return async (req, res, next) => {
+    // Si no está el user, es un endpoint de la Developer Console que usa apiKeyAuth, no debitamos.
+    if (!req.user || !req.user.id) {
+        req.logData = { domain: getOriginDomain(req), cost: 0, endpoint: req.path };
+        next();
+        return;
+    }
+
+    const domain = getOriginDomain(req);
+    const userRef = db.collection(USERS_COLLECTION).doc(req.user.id);
+    const currentTime = new Date();
+
+    if (req.user.tipoPlan === "creditos") {
+      if (req.user.creditos < costo) {
+        return res.status(402).json({
+          ok: false,
+          error: "Créditos insuficientes, recarga tu plan",
+        });
+      }
+      await userRef.update({
+        creditos: admin.firestore.FieldValue.increment(-costo),
+        ultimaConsulta: currentTime, 
+        ultimoDominio: domain,        
+      });
+      req.user.creditos -= costo;
+    } else if (req.user.tipoPlan === "ilimitado") {
+        await userRef.update({
+            ultimaConsulta: currentTime,
+            ultimoDominio: domain,
+        });
+    }
+
+    req.logData = {
+        domain: domain,
+        cost: costo,
+        endpoint: req.path,
+    };
+    
+    next();
+  };
+};
+
+/**
+ * Middleware de Autenticación de Administrador (Panel de Admin)
+ */
+const adminAuthMiddleware = (req, res, next) => {
+    if (!ADMIN_API_KEY) {
+         return res.status(503).json({ ok: false, error: "Servicio de administración no disponible: Clave de entorno no cargada." });
+    }
+    
+    const adminKey = req.headers["x-admin-key"];
+    if (adminKey === ADMIN_API_KEY) {
+        next();
+    } else {
+        res.status(401).json({ ok: false, error: "Clave de administrador Inválida. Acceso no autorizado." });
+    }
+};
+
+
+/* ----------------------------------------------------------------------------------
+   3. HELPERS DE API DE CONSULTAS
+-------------------------------------------------------------------------------------*/
+
+/**
+ * Guarda el log en la API externa. (API de Consultas Helper)
+ */
+const guardarLogExterno = async (logData) => {
+    const horaConsulta = new Date(logData.timestamp).toISOString();
+    const url = `${LOG_GUARDADO_BASE_URL}/log_consulta?host=${encodeURIComponent(logData.domain)}&hora=${encodeURIComponent(horaConsulta)}&endpoint=${encodeURIComponent(logData.endpoint)}&userId=${encodeURIComponent(logData.userId)}&costo=${logData.cost}`;
+    
+    try {
+        await axios.get(url);
+    } catch (e) {
+        console.error("Error al guardar log en API externa:", e.message);
+    }
+};
+
+
+const replaceBranding = (data) => {
+  if (typeof data === 'string') {
+    return data.replace(/@LEDERDATA_OFC_BOT|@otra|\[FACTILIZA]/g, NEW_BRANDING);
+  }
+  if (Array.isArray(data)) {
+    return data.map(item => replaceBranding(item));
+  }
+  if (typeof data === 'object' && data !== null) {
+    const newObject = {};
+    for (const key in data) {
+      if (Object.prototype.hasOwnProperty.call(data, key)) {
+        if (key === "bot_used") {
+          continue; 
+        } else {
+          newObject[key] = replaceBranding(data[key]);
+        }
+      }
+    }
+    return newObject;
+  }
+  return data;
+};
+
+/**
+ * Transforma la respuesta de búsquedas por nombre/texto a un formato tipo "result" en la raiz.
+ */
+const transformarRespuestaBusqueda = (response, user) => {
+  let processedResponse = procesarRespuesta(response, user);
+
+  if (processedResponse.message && typeof processedResponse.message === 'string') {
+    processedResponse.message = processedResponse.message.replace(/\s*↞ Puedes visualizar la foto de una coincidencia antes de usar \/dni ↠\s*/, '').trim();
+  }
+
+  return processedResponse;
+};
+
+
+/**
+ * Procesa la respuesta de la API externa para aplicar branding y limpiar campos.
+ */
+const procesarRespuesta = (response, user) => {
+  let processedResponse = replaceBranding(response);
+
+  delete processedResponse["developed-by"];
+  delete processedResponse["credits"];
+
+  const userPlan = {
+    tipo: user.tipoPlan,
+    creditosRestantes: user.tipoPlan === "creditos" ? user.creditos : null,
+  };
+
+  if (processedResponse.data) {
+    delete processedResponse.data["developed-by"];
+    delete processedResponse.data["credits"];
+
+    processedResponse.data.userPlan = userPlan;
+    processedResponse.data["powered-by"] = "Consulta PE";
+  }
+
+  processedResponse["consulta-pe"] = {
+    poweredBy: "Consulta PE",
+    userPlan,
+  };
+
+  if (processedResponse.ok === false && processedResponse.details) {
+    if (processedResponse.details.message?.includes("Token con falta de pago")) {
+      processedResponse.details.message = "Error en la consulta, intenta nuevamente";
+    }
+    if (processedResponse.details.detalle?.message?.includes("Token con falta de pago")) {
+      processedResponse.details.detalle.message = "Error en la consulta, intenta nuevamente";
+    }
+    delete processedResponse.details.detalle?.plan;
+  }
+
+  return processedResponse;
+};
+
+
+/**
+ * Función genérica para consumir API, procesar la respuesta y AHORA GUARDAR EL LOG EXTERNO.
+ */
+const consumirAPI = async (req, res, url, transformer = procesarRespuesta) => {
+  try {
+    const response = await axios.get(url);
+    const processedResponse = transformer(response.data, req.user);
+
+    if (response.status >= 200 && response.status < 300) {
+        const logData = {
+            userId: req.user.id,
+            timestamp: new Date(),
+            ...req.logData,
+        };
+        guardarLogExterno(logData);
+    }
+    
+    res.json(processedResponse);
+  } catch (error) {
+    console.error("Error al consumir API:", error.message);
+    const errorResponse = {
+      ok: false,
+      error: "Error en API externa",
+      details: error.response ? error.response.data : error.message,
+    };
+    
+    const processedErrorResponse = procesarRespuesta(errorResponse, req.user);
+    res.status(error.response ? error.response.status : 500).json(processedErrorResponse);
+  }
+};
+
+/* ----------------------------------------------------------------------------------
+   4. ENDPOINTS: GESTIÓN DE APPS (DEVELOPER CONSOLE)
+-------------------------------------------------------------------------------------*/
+
+/**
+ * 1️⃣ AUTENTICACIÓN Y VERIFICACIÓN (FIREBASE)
+ * Estos endpoints usan la lógica de la Developer Console para la gestión de usuarios.
+ */
+
 app.post("/auth/register", async (req, res) => {
     const { email, password, displayName } = req.body;
     if (!email || !password) return res.status(400).json({ ok: false, error: "Email y password son requeridos." });
 
     try {
-        // 1. Crear el usuario en Firebase Auth
         const user = await auth.createUser({ email, password, displayName });
-
-        // 2. Crear el registro inicial en Firestore (para guardar la API Key futura o info de perfil)
         await db.collection(USERS_COLLECTION).doc(user.uid).set({
             email: user.email,
             displayName: user.displayName,
             registeredAt: new Date().toISOString(),
-            // La API Key (token) se genera al iniciar sesión
+            // Se mantiene la estructura de plan para compatibilidad con authMiddleware de API de Consultas
+            tipoPlan: 'none', 
+            creditos: 0,
+            fechaCreacion: new Date(),
         });
-
         return res.json({ ok: true, message: "Usuario registrado con éxito.", uid: user.uid });
     } catch (e) {
         return res.status(400).json({ ok: false, error: e.message });
     }
 });
 
-/**
- * Simula el login: Toma credenciales, verifica, y devuelve un ID Token (API Key).
- * En un sistema real, esto se manejaría en el frontend. Aquí, lo hacemos para generar el token.
- */
 app.post("/auth/login", async (req, res) => {
-    const { email, password } = req.body;
-    if (!email || !password) return res.status(400).json({ ok: false, error: "Email y password son requeridos." });
-
-    // NOTA: **NO ES SEGURO** hacer un login con password en el backend con el Admin SDK. 
-    // Esto es un placeholder. El flujo correcto es:
-    // 1. Cliente se autentica con Firebase JS SDK.
-    // 2. Cliente envía el ID Token obtenido (`x-api-key`) a todos los endpoints protegidos.
-
-    // Para fines de prueba y dado el requerimiento, generaremos un token para un UID existente.
-    // Asume que el desarrollador ya hizo login en el cliente y nos pasa su UID.
+    // Esto sigue siendo un PLACEHOLDER. El ID Token final debe obtenerse en el CLIENTE.
     const { uid } = req.body; 
     if (!uid) return res.status(400).json({ ok: false, error: "Para este placeholder, debe proveer su UID." });
 
     try {
         const customToken = await auth.createCustomToken(uid);
-        // Usamos el UID para generar un token que pueda ser usado como 'API Key'
-        // El cliente debe usar este token para hacer login en el cliente o usarlo directamente como API Key.
         return res.json({ 
             ok: true, 
             message: "Token generado con éxito.", 
             uid,
-            token_id: customToken, // Este NO ES EL ID TOKEN que se usa como API KEY, es el custom token.
-            // Para fines de la consola, el desarrollador usaría el ID Token obtenido tras un login exitoso.
-            // Aquí, simularemos que le devolvemos un token que puede usar.
-            
-            // 💡 Instrucción: El desarrollador debe obtener su token final (x-api-key)
-            // haciendo login en el frontend con Firebase Client SDK, o usar este 
-            // 'customToken' para obtener el 'ID Token' final.
-            placeholder_api_key: "Usar el ID Token generado por el cliente Firebase tras un login exitoso."
+            placeholder_custom_token: customToken, 
+            placeholder_api_key_instruction: "Usar el ID Token generado por el cliente Firebase tras un login exitoso."
         });
 
     } catch (e) {
@@ -262,17 +646,11 @@ app.post("/auth/login", async (req, res) => {
     }
 });
 
-/* ----------------------------------------------------------------------------------
-   2️⃣ APLICACIONES (CRUD PRINCIPAL)
-   Rutas protegidas con apiKeyAuth y checkAppOwnership
--------------------------------------------------------------------------------------*/
 
 /**
- * Crear un registro de aplicación.
- * 1. Genera un ID.
- * 2. Crea el registro en Firestore (mapeo app->developer).
- * 3. Crea el archivo JSON de metadatos iniciales en GitHub.
+ * 2️⃣ APLICACIONES (CRUD PRINCIPAL)
  */
+
 app.post("/apps/create", apiKeyAuth, async (req, res) => {
     const { name, description, category } = req.body;
     const { developerId } = req;
@@ -284,28 +662,14 @@ app.post("/apps/create", apiKeyAuth, async (req, res) => {
     
     try {
         const appMetadata = {
-            appId,
-            developerId,
-            name,
-            description,
-            category: category || 'General',
-            status: 'draft',
-            createdAt: currentTimestamp,
-            updatedAt: currentTimestamp,
-            versions: []
+            appId, developerId, name, description, category: category || 'General',
+            status: 'draft', createdAt: currentTimestamp, updatedAt: currentTimestamp, versions: []
         };
         
-        // 1. Crear el mapeo en Firestore
         await db.collection(APPS_COLLECTION).doc(appId).set({
-            appId,
-            developerId,
-            name,
-            status: 'draft',
-            createdAt: currentTimestamp,
-            updatedAt: currentTimestamp
+            appId, developerId, name, status: 'draft', createdAt: currentTimestamp, updatedAt: currentTimestamp
         });
 
-        // 2. Crear el archivo JSON de metadatos en GitHub (dentro de la carpeta del desarrollador)
         const pathInRepo = `public/developer_apps/${developerId}/${appId}/meta.json`;
         await createOrUpdateGithubFile(
             pathInRepo,
@@ -321,12 +685,8 @@ app.post("/apps/create", apiKeyAuth, async (req, res) => {
     }
 });
 
-/**
- * Obtener datos completos de la aplicación.
- */
 app.get("/apps/:appId", apiKeyAuth, checkAppOwnership, async (req, res) => {
     const { developerId, appId } = req;
-
     try {
         const pathInRepo = `public/developer_apps/${developerId}/${appId}/meta.json`;
         const raw = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: pathInRepo });
@@ -340,36 +700,25 @@ app.get("/apps/:appId", apiKeyAuth, checkAppOwnership, async (req, res) => {
     }
 });
 
-/**
- * Editar información de la app.
- * NOTA: Esto solo actualiza el archivo meta.json.
- */
 app.patch("/apps/:appId/update", apiKeyAuth, checkAppOwnership, async (req, res) => {
     const { developerId, appId } = req;
     const updates = req.body;
     
-    // Lista negra de campos no editables directamente
-    delete updates.appId;
-    delete updates.developerId;
-    delete updates.createdAt;
-    delete updates.versions;
+    delete updates.appId; delete updates.developerId; delete updates.createdAt; delete updates.versions;
     
     try {
         const pathInRepo = `public/developer_apps/${developerId}/${appId}/meta.json`;
         
-        // 1. Obtener metadatos actuales
         const raw = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: pathInRepo });
         const currentMeta = JSON.parse(Buffer.from(raw.data.content, "base64").toString("utf8"));
         const sha = raw.data.sha;
         
-        // 2. Combinar y actualizar
         const newMeta = {
             ...currentMeta,
             ...updates,
             updatedAt: new Date().toISOString()
         };
         
-        // 3. Subir el nuevo archivo
         const contentBase64 = Buffer.from(JSON.stringify(newMeta, null, 2)).toString("base64");
         await octokit.repos.createOrUpdateFileContents({
             owner: G_OWNER, repo: G_REPO, path: pathInRepo, 
@@ -377,7 +726,6 @@ app.patch("/apps/:appId/update", apiKeyAuth, checkAppOwnership, async (req, res)
             content: contentBase64, sha
         });
 
-        // 4. Actualizar Firestore (solo campos clave como 'name')
         if (updates.name) {
             await db.collection(APPS_COLLECTION).doc(appId).update({ name: updates.name, updatedAt: newMeta.updatedAt });
         }
@@ -390,24 +738,16 @@ app.patch("/apps/:appId/update", apiKeyAuth, checkAppOwnership, async (req, res)
     }
 });
 
-
-/**
- * Eliminar o despublicar temporalmente.
- * NOTA: Solo eliminaremos el registro de Firestore y marcaremos el estado en el meta.json
- * La eliminación física de archivos en GitHub es peligrosa y lenta.
- */
 app.delete("/apps/:appId", apiKeyAuth, checkAppOwnership, async (req, res) => {
     const { developerId, appId } = req;
 
     try {
         const pathInRepo = `public/developer_apps/${developerId}/${appId}/meta.json`;
         
-        // 1. Obtener metadatos actuales
         const raw = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: pathInRepo });
         const currentMeta = JSON.parse(Buffer.from(raw.data.content, "base64").toString("utf8"));
         const sha = raw.data.sha;
         
-        // 2. Marcar como "deleted" en el meta.json de GitHub
         const newMeta = {
             ...currentMeta,
             status: 'deleted',
@@ -421,7 +761,6 @@ app.delete("/apps/:appId", apiKeyAuth, checkAppOwnership, async (req, res) => {
             content: contentBase64, sha
         });
         
-        // 3. Eliminar el mapeo en Firestore (Despublicar lógicamente para evitar que aparezca en el panel)
         await db.collection(APPS_COLLECTION).doc(appId).delete();
 
         return res.json({ ok: true, message: `Aplicación ${appId} marcada como eliminada/despublicada.`, status: newMeta.status });
@@ -433,68 +772,13 @@ app.delete("/apps/:appId", apiKeyAuth, checkAppOwnership, async (req, res) => {
 });
 
 
-/* ----------------------------------------------------------------------------------
-   3️⃣ SUBIR APK (CON ANÁLISIS AUTOMÁTICO)
-   4️⃣ SUBIR APK POR URL (Uptodown-Style)
-   5️⃣ VERIFICAR SI EL APK TIENE ANUNCIOS (Placeholder)
-   6️⃣ ANÁLISIS DE VIRUS (VIRUSTOTAL API GRATIS) (Placeholder)
--------------------------------------------------------------------------------------*/
-
-// NOTA: La lógica de análisis (APK Manifest, VirusTotal, Detección de Anuncios)
-// requiere librerías binarias o un servidor de análisis externo. Aquí se simulará
-// el proceso con datos de respuesta lógicos.
-
 /**
- * Placeholder para la detección de anuncios.
+ * 3️⃣ SUBIR APK (CON ANÁLISIS AUTOMÁTICO) Y ENLACES
  */
-function analyzeAdsFromBinary(apkData) {
-    // ⚠️ Lógica real no implementada. Simulación de detección.
-    // Una implementación real usaría un paquete como 'apk-parser' o 'apkmirror-tools'.
-    const hasAds = apkData.length % 2 === 0; 
-    return {
-        ads_detected: hasAds,
-        detected_sdks: hasAds ? ["admob", "unity-ads"] : []
-    };
-}
 
-/**
- * Placeholder para el escaneo de VirusTotal.
- */
-async function runVirusTotalScan(fileBuffer) {
-    if (!VIRUSTOTAL_API_KEY) {
-        return { status: "skipped", message: "VIRUSTOTAL_API_KEY no configurada." };
-    }
-    
-    // ⚠️ Lógica real no implementada. Simulación.
-    const sizeInMB = fileBuffer.length / (1024 * 1024);
-    
-    if (sizeInMB > 32) {
-         return { 
-            scan_status: "skipped", 
-            message: "El archivo es demasiado grande ( > 32MB) para la API gratuita de VirusTotal.", 
-            malicious: 0, 
-            suspicious: 0, 
-            undetected: 0 
-        };
-    }
-
-    // Simulación de escaneo exitoso
-    const results = {
-        scan_status: "completed",
-        malicious: sizeInMB > 10 ? 1 : 0, // Simulación: apps grandes tienen 1 malicioso
-        suspicious: 0,
-        undetected: 68
-    };
-
-    return results;
-}
-
-/**
- * 3️⃣ POST /apps/:appId/upload-apk - Subida directa del archivo APK.
- */
 app.post("/apps/:appId/upload-apk", apiKeyAuth, checkAppOwnership, async (req, res) => {
     const { developerId, appId } = req;
-    const { apk_base64, version } = req.body; // Se espera que el cliente envíe el APK en base64
+    const { apk_base64, version } = req.body; 
     
     if (!apk_base64 || !version) return res.status(400).json({ ok: false, error: "apk_base64 y version son requeridos." });
 
@@ -545,12 +829,8 @@ app.post("/apps/:appId/upload-apk", apiKeyAuth, checkAppOwnership, async (req, r
         });
         
         return res.json({
-            status: "uploaded",
-            apk_size: apkSize,
-            ...adAnalysis,
-            virus_scan: vtScan.scan_status,
-            virustotal_report: vtScan,
-            message: "APK subido y metadatos actualizados."
+            status: "uploaded", apk_size: apkSize, ...adAnalysis, virus_scan: vtScan.scan_status,
+            virustotal_report: vtScan, message: "APK subido y metadatos actualizados."
         });
 
     } catch (e) {
@@ -559,10 +839,6 @@ app.post("/apps/:appId/upload-apk", apiKeyAuth, checkAppOwnership, async (req, r
     }
 });
 
-
-/**
- * 4️⃣ POST /apps/:appId/upload-url - Subida de APK por URL (Solo enlace).
- */
 app.post("/apps/:appId/upload-url", apiKeyAuth, checkAppOwnership, async (req, res) => {
     const { developerId, appId } = req;
     const { apk_url, version } = req.body;
@@ -570,38 +846,28 @@ app.post("/apps/:appId/upload-url", apiKeyAuth, checkAppOwnership, async (req, r
     if (!apk_url || !version) return res.status(400).json({ ok: false, error: "apk_url y version son requeridos." });
 
     try {
-        // 1. Validar que la URL funciona y obtener cabeceras (tamaño)
         const head = await axios.head(apk_url, { maxRedirects: 5, httpsAgent });
         const apkSize = parseInt(head.headers['content-length'], 10) || 0;
         
-        // 2. Intentar descargar los primeros 32 MB para VirusTotal y metadatos (Simulación)
         let vtScan = { scan_status: "limited_or_skipped", message: "Escaneo por URL no disponible en esta simulación." };
         let adAnalysis = { ads_detected: null, detected_sdks: [] };
         
-        if (apkSize > 0 && apkSize / (1024 * 1024) <= 80) { // Si es menor a 80MB, podemos descargar los 32MB
-             // ⚠️ Simulación: Aquí se descargaría la cabecera y se analizaría.
+        if (apkSize > 0 && apkSize / (1024 * 1024) <= 80) { 
              adAnalysis = { ads_detected: true, detected_sdks: ["admob"] };
              if (apkSize / (1024 * 1024) <= 32) {
-                // Simulación de escaneo real
                 vtScan = { scan_status: "completed", malicious: 0, suspicious: 0, undetected: 68 };
              }
         }
         
-        // 3. Actualizar Metadatos (Versiones)
         const metaPath = `public/developer_apps/${developerId}/${appId}/meta.json`;
         const raw = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: metaPath });
         const currentMeta = JSON.parse(Buffer.from(raw.data.content, "base64").toString("utf8"));
         const sha = raw.data.sha;
 
         const versionData = {
-            version_name: version,
-            apk_size: apkSize,
-            apk_url: apk_url,
-            upload_type: 'external_url',
-            uploadedAt: new Date().toISOString(),
-            ads_detected: adAnalysis.ads_detected,
-            ads_sdks: adAnalysis.detected_sdks,
-            virustotal_report: vtScan
+            version_name: version, apk_size: apkSize, apk_url: apk_url, upload_type: 'external_url',
+            uploadedAt: new Date().toISOString(), ads_detected: adAnalysis.ads_detected,
+            ads_sdks: adAnalysis.detected_sdks, virustotal_report: vtScan
         };
         
         currentMeta.versions.push(versionData);
@@ -614,10 +880,7 @@ app.post("/apps/:appId/upload-url", apiKeyAuth, checkAppOwnership, async (req, r
         });
 
         return res.json({
-            status: "linked",
-            apk_size: apkSize,
-            ...adAnalysis,
-            virus_scan: vtScan.scan_status,
+            status: "linked", apk_size: apkSize, ...adAnalysis, virus_scan: vtScan.scan_status,
             message: "Enlace de APK guardado y metadatos actualizados (análisis limitado)."
         });
 
@@ -627,36 +890,19 @@ app.post("/apps/:appId/upload-url", apiKeyAuth, checkAppOwnership, async (req, r
     }
 });
 
-
-/**
- * 5️⃣ POST /apps/:appId/check-ads - Ejecutar manualmente la detección de anuncios.
- */
 app.post("/apps/:appId/check-ads", apiKeyAuth, checkAppOwnership, async (req, res) => {
-    // ⚠️ Se requeriría que el desarrollador pase el binario del APK si no está en el servidor.
-    // Asumiremos que solo se puede ejecutar si hay una versión subida con APK.
-    
     const latestVersion = req.appData.versions?.slice(-1)[0];
     if (!latestVersion || !latestVersion.apk_size) {
          return res.status(400).json({ ok: false, error: "No hay una versión con un APK subido para analizar." });
     }
-
-    // Simulación
     const analysis = analyzeAdsFromBinary({ length: latestVersion.apk_size });
-
-    // En un caso real, esto requeriría descargar el APK o tenerlo local.
     return res.json({
-        ok: true,
-        ads_detected: analysis.ads_detected,
-        detected_sdks: analysis.detected_sdks,
+        ok: true, ads_detected: analysis.ads_detected, detected_sdks: analysis.detected_sdks,
         message: "Análisis de anuncios completado con simulación."
     });
 });
 
-/**
- * 6️⃣ POST /apps/:appId/virus-scan - Ejecutar manualmente el escaneo de VirusTotal.
- */
 app.post("/apps/:appId/virus-scan", apiKeyAuth, checkAppOwnership, async (req, res) => {
-    // Asumiremos que solo se puede escanear la versión más reciente subida.
     const latestVersion = req.appData.versions?.slice(-1)[0];
 
     if (!latestVersion || !latestVersion.apk_size || !latestVersion.apk_path) {
@@ -665,40 +911,25 @@ app.post("/apps/:appId/virus-scan", apiKeyAuth, checkAppOwnership, async (req, r
     
     if (latestVersion.apk_size / (1024 * 1024) > 32) {
          return res.json({ 
-            scan_status: "skipped", 
-            message: "El archivo es demasiado grande ( > 32MB) para la API gratuita de VirusTotal.", 
-            malicious: 0, 
-            suspicious: 0, 
-            undetected: 0 
+            scan_status: "skipped", message: "El archivo es demasiado grande ( > 32MB) para la API gratuita de VirusTotal.", 
+            malicious: 0, suspicious: 0, undetected: 0 
         });
     }
 
-    // ⚠️ Lógica real: Descargaríamos el APK de GitHub, lo subiríamos a VT, y consultaríamos el resultado.
-    // Simulación:
-    const vtScan = await runVirusTotalScan(Buffer.alloc(latestVersion.apk_size)); // Pasa un buffer simulado del tamaño correcto
-
-    // Actualizar metadatos si el escaneo tuvo éxito
-    // ... (lógica de actualización de meta.json omitida por brevedad, se haría de forma similar al /upload-apk)
+    const vtScan = await runVirusTotalScan(Buffer.alloc(latestVersion.apk_size)); 
 
     return res.json({
-        ok: true,
-        scan_status: vtScan.scan_status,
-        malicious: vtScan.malicious,
-        suspicious: vtScan.suspicious,
-        undetected: vtScan.undetected,
+        ok: true, scan_status: vtScan.scan_status, malicious: vtScan.malicious,
+        suspicious: vtScan.suspicious, undetected: vtScan.undetected,
         message: "Escaneo de VirusTotal completado con simulación."
     });
 });
 
 
-/* ----------------------------------------------------------------------------------
-   7️⃣ GESTIÓN DE VERSIONES
--------------------------------------------------------------------------------------*/
-
 /**
- * POST /apps/:appId/version - Crear nueva versión (solo metadatos).
- * La subida del APK se haría con /upload-apk o /upload-url.
+ * 4️⃣ GESTIÓN DE VERSIONES
  */
+
 app.post("/apps/:appId/version", apiKeyAuth, checkAppOwnership, async (req, res) => {
     const { developerId, appId } = req;
     const { version_name, changelog, apk_size } = req.body;
@@ -736,50 +967,33 @@ app.post("/apps/:appId/version", apiKeyAuth, checkAppOwnership, async (req, res)
     }
 });
 
-
-/**
- * GET /apps/:appId/versions - Listado de versiones.
- */
 app.get("/apps/:appId/versions", apiKeyAuth, checkAppOwnership, async (req, res) => {
-    // Ya tenemos req.appData del middleware
     const versions = req.appData.versions || [];
     return res.json({ ok: true, versions: versions.map(v => ({ name: v.version_name, uploadedAt: v.uploadedAt, size: v.apk_size })) });
 });
 
-/**
- * GET /apps/:appId/latest - Versión más reciente.
- */
 app.get("/apps/:appId/latest", apiKeyAuth, checkAppOwnership, async (req, res) => {
     const versions = req.appData.versions || [];
     if (versions.length === 0) {
         return res.status(404).json({ ok: false, error: "No se encontraron versiones para esta aplicación." });
     }
-    
-    // Asume que la última versión en el array es la más reciente (por cómo se añade)
     const latest = versions.slice(-1)[0]; 
     return res.json({ ok: true, latest_version: latest });
 });
 
-
-/* ----------------------------------------------------------------------------------
-   8️⃣ ESTADÍSTICAS
-   NOTA: Las estadísticas se guardarán en Firestore para escalabilidad.
--------------------------------------------------------------------------------------*/
-
 /**
- * POST /stats/report-download - Reportar una descarga.
+ * 5️⃣ ESTADÍSTICAS (REPORTES PÚBLICOS Y PRIVADOS)
  */
+
 app.post("/stats/report-download", async (req, res) => {
     const { appId, country, device } = req.body;
     if (!appId) return res.status(400).json({ ok: false, error: "appId es requerido." });
 
     try {
         const statsRef = db.collection(STATS_COLLECTION).doc(appId);
-        
-        // Actualización atómica de contadores
         const updateData = {
             downloads: FieldValue.increment(1),
-            today: FieldValue.increment(1), // Se requeriría una tarea cron para resetear 'today'
+            today: FieldValue.increment(1), 
             [`countries.${country || 'UNKNOWN'}`]: FieldValue.increment(1),
             updatedAt: new Date().toISOString()
         };
@@ -793,9 +1007,6 @@ app.post("/stats/report-download", async (req, res) => {
     }
 });
 
-/**
- * POST /stats/report-install - Reportar una instalación.
- */
 app.post("/stats/report-install", async (req, res) => {
     const { appId, device_id, version_name } = req.body;
     if (!appId || !device_id) return res.status(400).json({ ok: false, error: "appId y device_id son requeridos." });
@@ -819,10 +1030,6 @@ app.post("/stats/report-install", async (req, res) => {
     }
 });
 
-
-/**
- * GET /apps/:appId/stats - Obtener panel de estadísticas.
- */
 app.get("/apps/:appId/stats", apiKeyAuth, checkAppOwnership, async (req, res) => {
     const { appId } = req.params;
 
@@ -830,8 +1037,7 @@ app.get("/apps/:appId/stats", apiKeyAuth, checkAppOwnership, async (req, res) =>
         const statsDoc = await db.collection(STATS_COLLECTION).doc(appId).get();
         if (!statsDoc.exists) {
             return res.json({ 
-                ok: true, 
-                downloads: 0, installs: 0, uninstalls: 0, today: 0, countries: {}, versions: {} 
+                ok: true, downloads: 0, installs: 0, uninstalls: 0, today: 0, countries: {}, versions: {} 
             });
         }
         
@@ -839,12 +1045,8 @@ app.get("/apps/:appId/stats", apiKeyAuth, checkAppOwnership, async (req, res) =>
         
         return res.json({
             ok: true,
-            downloads: stats.downloads || 0,
-            installs: stats.installs || 0,
-            uninstalls: stats.uninstalls || 0, // No hay endpoint de uninstall, pero se incluye
-            today: stats.today || 0,
-            countries: stats.countries || {},
-            versions: stats.versions || {},
+            downloads: stats.downloads || 0, installs: stats.installs || 0, uninstalls: stats.uninstalls || 0,
+            today: stats.today || 0, countries: stats.countries || {}, versions: stats.versions || {},
             updatedAt: stats.updatedAt
         });
         
@@ -855,25 +1057,15 @@ app.get("/apps/:appId/stats", apiKeyAuth, checkAppOwnership, async (req, res) =>
 });
 
 
-/* ----------------------------------------------------------------------------------
-   9️⃣ RECURSOS MULTIMEDIA (IMÁGENES, VIDEOS)
--------------------------------------------------------------------------------------*/
-
 /**
- * Función genérica para subir archivos multimedia.
+ * 6️⃣ RECURSOS MULTIMEDIA (IMÁGENES, VIDEOS)
  */
+
 async function uploadMedia(developerId, appId, fileBase64, type, filename) {
-    const fileBuffer = Buffer.from(fileBase64, 'base64');
     const pathInRepo = `public/developer_apps/${developerId}/${appId}/media/${filename}`;
     
-    // 1. Subir a GitHub
-    await createOrUpdateGithubFile(
-        pathInRepo,
-        fileBase64,
-        `Subir ${type} para ${appId}`
-    );
+    await createOrUpdateGithubFile(pathInRepo, fileBase64, `Subir ${type} para ${appId}`);
 
-    // 2. Actualizar meta.json
     const metaPath = `public/developer_apps/${developerId}/${appId}/meta.json`;
     const raw = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: metaPath });
     const currentMeta = JSON.parse(Buffer.from(raw.data.content, "base64").toString("utf8"));
@@ -902,10 +1094,6 @@ async function uploadMedia(developerId, appId, fileBase64, type, filename) {
     return { fileUrl, currentMeta };
 }
 
-
-/**
- * POST /apps/:appId/upload-icon - Subir ícono.
- */
 app.post("/apps/:appId/upload-icon", apiKeyAuth, checkAppOwnership, async (req, res) => {
     const { file_base64, file_ext } = req.body;
     if (!file_base64 || !file_ext) return res.status(400).json({ ok: false, error: "file_base64 y file_ext (ej: png) son requeridos." });
@@ -921,10 +1109,6 @@ app.post("/apps/:appId/upload-icon", apiKeyAuth, checkAppOwnership, async (req, 
     }
 });
 
-
-/**
- * POST /apps/:appId/upload-screenshots - Subir capturas.
- */
 app.post("/apps/:appId/upload-screenshots", apiKeyAuth, checkAppOwnership, async (req, res) => {
     const { file_base64, file_ext } = req.body;
     if (!file_base64 || !file_ext) return res.status(400).json({ ok: false, error: "file_base64 y file_ext (ej: jpg) son requeridos." });
@@ -940,15 +1124,10 @@ app.post("/apps/:appId/upload-screenshots", apiKeyAuth, checkAppOwnership, async
     }
 });
 
-/**
- * DELETE /files/:fileId - Eliminar archivo.
- * NOTA: fileId será la ruta completa del archivo en el repositorio: public/developer_apps/...
- */
 app.delete("/files/:fileId", apiKeyAuth, async (req, res) => {
-    const { fileId } = req.params; // La ruta en el repo
+    const { fileId } = req.params; 
     const { developerId } = req;
     
-    // Verificación de propiedad: Asegurarse de que el archivo a eliminar esté dentro de la carpeta del desarrollador
     const fullPath = `public/developer_apps/${developerId}/${fileId}`;
     if (!fullPath.includes(`/public/developer_apps/${developerId}/`)) {
         return res.status(403).json({ ok: false, error: "Acceso denegado. Solo puedes eliminar archivos dentro de tu carpeta de desarrollador." });
@@ -956,8 +1135,8 @@ app.delete("/files/:fileId", apiKeyAuth, async (req, res) => {
     
     try {
         await deleteGithubFile(fullPath, `Eliminar archivo ${fullPath} solicitado por el desarrollador`);
-
-        // Lógica de actualización del meta.json para eliminar la referencia (Omitida por brevedad)
+        
+        // NOTA: La lógica de actualizar el meta.json para remover la referencia se omite por brevedad.
         
         return res.json({ ok: true, message: `Archivo ${fullPath} eliminado con éxito.` });
     } catch (e) {
@@ -967,15 +1146,11 @@ app.delete("/files/:fileId", apiKeyAuth, async (req, res) => {
 });
 
 
-/* ----------------------------------------------------------------------------------
-   1️⃣0️⃣ SISTEMA DE ANUNCIOS (OPCIONAL)
--------------------------------------------------------------------------------------*/
-
 /**
- * GET /apps/:appId/ads-info - Obtener configuración de anuncios.
+ * 7️⃣ GESTIÓN DE ANUNCIOS
  */
+
 app.get("/apps/:appId/ads-info", apiKeyAuth, checkAppOwnership, async (req, res) => {
-    // La información de anuncios está en los metadatos de la aplicación.
     const { ads_config, ads_detected } = req.appData;
     
     return res.json({ 
@@ -985,9 +1160,6 @@ app.get("/apps/:appId/ads-info", apiKeyAuth, checkAppOwnership, async (req, res)
     });
 });
 
-/**
- * PATCH /apps/:appId/ads-config - Configurar anuncios.
- */
 app.patch("/apps/:appId/ads-config", apiKeyAuth, checkAppOwnership, async (req, res) => {
     const { developerId, appId } = req;
     const { has_ads, ad_network } = req.body;
@@ -1021,19 +1193,14 @@ app.patch("/apps/:appId/ads-config", apiKeyAuth, checkAppOwnership, async (req, 
 });
 
 
-/* ----------------------------------------------------------------------------------
-   1️⃣1️⃣ NOTIFICACIONES DEL DESARROLLADOR
-   NOTA: Esto requeriría una colección "notifications" en Firestore.
--------------------------------------------------------------------------------------*/
-
 /**
- * GET /notifications - Listar notificaciones.
+ * 8️⃣ NOTIFICACIONES DEL DESARROLLADOR
  */
+
 app.get("/notifications", apiKeyAuth, async (req, res) => {
     const { developerId } = req;
 
     try {
-        // En un caso real, buscaríamos en la colección 'notifications' donde 'developerId' sea igual al ID del usuario.
         const notificationsSnapshot = await db.collection('notifications')
             .where('developerId', '==', developerId)
             .orderBy('createdAt', 'desc')
@@ -1045,12 +1212,9 @@ app.get("/notifications", apiKeyAuth, async (req, res) => {
             ...doc.data()
         }));
 
-        // Simulación si no hay colección
         if (notifications.length === 0) {
             notifications.push({
-                id: 'sim_1',
-                message: "¡Bienvenido! Revisa nuestra guía de Developer Console.",
-                read: false,
+                id: 'sim_1', message: "¡Bienvenido! Revisa nuestra guía de Developer Console.", read: false,
                 createdAt: new Date().toISOString()
             });
         }
@@ -1063,9 +1227,6 @@ app.get("/notifications", apiKeyAuth, async (req, res) => {
     }
 });
 
-/**
- * POST /notifications/mark-read - Marcar como leído.
- */
 app.post("/notifications/mark-read", apiKeyAuth, async (req, res) => {
     const { notificationId } = req.body;
     const { developerId } = req;
@@ -1089,58 +1250,11 @@ app.post("/notifications/mark-read", apiKeyAuth, async (req, res) => {
     }
 });
 
+
 /* ----------------------------------------------------------------------------------
-   ENDPOINTS DEL CATÁLOGO PÚBLICO (No protegidos)
+   5. ENDPOINTS DEL CATÁLOGO PÚBLICO (No protegidos)
 -------------------------------------------------------------------------------------*/
 
-/**
- * Función auxiliar para procesar los metadatos de las aplicaciones del catálogo público.
- * Agrega el tamaño en MB y la cantidad de descargas.
- * @param {object} meta - Objeto de metadatos de la aplicación.
- * @returns {object} - Objeto de aplicación con datos enriquecidos.
- */
-async function enhanceAppMetadata(meta) {
-    const latestVersion = meta.versions && meta.versions.length > 0
-        ? meta.versions.slice(-1)[0]
-        : null;
-
-    // Obtener las descargas reales de Firestore si están disponibles
-    let downloadsFromStats = 0;
-    try {
-        const statsDoc = await db.collection(STATS_COLLECTION).doc(meta.appId).get();
-        if (statsDoc.exists) {
-            downloadsFromStats = statsDoc.data().downloads || 0;
-        }
-    } catch (e) {
-        console.warn(`No se pudieron obtener estadísticas para ${meta.appId}: ${e.message}`);
-    }
-
-    // Usar las descargas de Firestore o las de Google Play si se sincronizaron
-    const installsText = downloadsFromStats > 0 
-        ? downloadsFromStats.toLocaleString() + "+" // Usar el número real si existe
-        : meta.installs || "0+"; // Usar el campo de Google Play si no hay stats
-
-    const sizeInBytes = latestVersion?.apk_size || 0;
-
-    return {
-        appId: meta.appId,
-        name: meta.name || meta.title,
-        description: meta.summary || meta.description,
-        icon: meta.iconUrl || meta.icon,
-        category: meta.category || meta.genre || 'General',
-        score: meta.score,
-        ratings: meta.ratings,
-        installs: installsText, // Cantidad de descargas/instalaciones
-        size_mb: formatBytesToMB(sizeInBytes), // Tamaño del APK en MB
-        version: latestVersion?.version_name || meta.version || 'N/A',
-        updatedAt: meta.updatedAt || meta.updated
-    };
-}
-
-/**
- * Endpoint para el catálogo público (apps en public/apps).
- * Lista las apps populares y enriquece sus datos con tamaño en MB y descargas.
- */
 app.get("/api/public/apps/popular", async (req, res) => {
     try {
         const tree = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: "public/apps" });
@@ -1150,13 +1264,10 @@ app.get("/api/public/apps/popular", async (req, res) => {
         for (const folder of appFolders) {
              try {
                 const metaRaw = await octokit.repos.getContent({ 
-                    owner: G_OWNER, 
-                    repo: G_REPO, 
-                    path: `${folder.path}/meta.json` 
+                    owner: G_OWNER, repo: G_REPO, path: `${folder.path}/meta.json` 
                 });
                 const meta = JSON.parse(Buffer.from(metaRaw.data.content, "base64").toString("utf8"));
                 
-                // Enriquecer y agregar al catálogo
                 const enhancedApp = await enhanceAppMetadata(meta);
                 popularApps.push(enhancedApp);
 
@@ -1165,7 +1276,6 @@ app.get("/api/public/apps/popular", async (req, res) => {
              }
         }
         
-        // Opcional: Ordenar por descargas o rating
         popularApps.sort((a, b) => (b.score || 0) - (a.score || 0));
 
         return res.json({ ok: true, apps: popularApps });
@@ -1176,14 +1286,8 @@ app.get("/api/public/apps/popular", async (req, res) => {
     }
 });
 
-
-/**
- * 🆕 Endpoint para listar aplicaciones por categorías y enriquecer los datos.
- * Endpoint: /api/public/apps/categories?category=JUEGOS
- * @param {string} req.query.category - Categoría a filtrar (opcional).
- */
 app.get("/api/public/apps/categories", async (req, res) => {
-    const { category } = req.query; // Categoría a buscar (e.g., "Juegos", "Herramientas")
+    const { category } = req.query; 
 
     try {
         const tree = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: "public/apps" });
@@ -1195,30 +1299,23 @@ app.get("/api/public/apps/categories", async (req, res) => {
         for (const folder of appFolders) {
             try {
                 const metaRaw = await octokit.repos.getContent({ 
-                    owner: G_OWNER, 
-                    repo: G_REPO, 
-                    path: `${folder.path}/meta.json` 
+                    owner: G_OWNER, repo: G_REPO, path: `${folder.path}/meta.json` 
                 });
                 const meta = JSON.parse(Buffer.from(metaRaw.data.content, "base64").toString("utf8"));
                 
-                // Enriquecer los datos para el catálogo
                 const enhancedApp = await enhanceAppMetadata(meta);
-                
                 const appCategory = enhancedApp.category.toUpperCase();
 
-                // 1. Si se especificó una categoría y no coincide, la ignoramos
                 if (category && appCategory !== category.toUpperCase()) {
                     continue;
                 }
 
-                // 2. Acumular por categoría (si no se especifica un filtro)
                 if (!category) {
                     if (!appsByCategory[appCategory]) {
                         appsByCategory[appCategory] = [];
                     }
                     appsByCategory[appCategory].push(enhancedApp);
                 } else {
-                    // Si se especifica un filtro, solo devolvemos el array plano
                     allApps.push(enhancedApp);
                 }
 
@@ -1228,19 +1325,10 @@ app.get("/api/public/apps/categories", async (req, res) => {
         }
 
         if (category) {
-            return res.json({ 
-                ok: true, 
-                category: category, 
-                apps: allApps, 
-                count: allApps.length 
-            });
+            return res.json({ ok: true, category: category, apps: allApps, count: allApps.length });
         }
         
-        return res.json({ 
-            ok: true, 
-            message: "Catálogo cargado por categorías.",
-            categories: appsByCategory 
-        });
+        return res.json({ ok: true, message: "Catálogo cargado por categorías.", categories: appsByCategory });
 
     } catch (e) {
         if (e.status === 404) return res.json({ ok: true, apps: [], message: "El catálogo público (public/apps) está vacío." });
@@ -1249,12 +1337,6 @@ app.get("/api/public/apps/categories", async (req, res) => {
     }
 });
 
-
-/**
- * 🆕 Endpoint para buscar una aplicación específica por su nombre.
- * Endpoint: /api/public/apps/search?query=facebook
- * @param {string} req.query.query - Nombre o parte del nombre a buscar.
- */
 app.get("/api/public/apps/search", async (req, res) => {
     const { query } = req.query;
     
@@ -1273,18 +1355,14 @@ app.get("/api/public/apps/search", async (req, res) => {
         for (const folder of appFolders) {
             try {
                 const metaRaw = await octokit.repos.getContent({ 
-                    owner: G_OWNER, 
-                    repo: G_REPO, 
-                    path: `${folder.path}/meta.json` 
+                    owner: G_OWNER, repo: G_REPO, path: `${folder.path}/meta.json` 
                 });
                 const meta = JSON.parse(Buffer.from(metaRaw.data.content, "base64").toString("utf8"));
                 
-                // Buscar coincidencia en el nombre o descripción
                 const appName = (meta.name || meta.title || '').toLowerCase();
                 const appDescription = (meta.description || '').toLowerCase();
 
                 if (appName.includes(lowerCaseQuery) || appDescription.includes(lowerCaseQuery)) {
-                    // Enriquecer los datos para el catálogo
                     const enhancedApp = await enhanceAppMetadata(meta);
                     searchResults.push(enhancedApp);
                 }
@@ -1295,10 +1373,7 @@ app.get("/api/public/apps/search", async (req, res) => {
         }
 
         return res.json({ 
-            ok: true, 
-            query: query,
-            results: searchResults,
-            count: searchResults.length 
+            ok: true, query: query, results: searchResults, count: searchResults.length 
         });
 
     } catch (e) {
@@ -1308,11 +1383,301 @@ app.get("/api/public/apps/search", async (req, res) => {
     }
 });
 
+/* ----------------------------------------------------------------------------------
+   6. ENDPOINTS: API DE CONSULTAS (Mantenidos)
+-------------------------------------------------------------------------------------*/
 
-// 🚨 Se omiten aquí por brevedad las rutas de sincronización con Google Play, 
-// asumiendo que el resto del código es correcto, pero se mantiene la estructura.
+// 🔹 API v1 (Nueva)
+app.get("/api/dni", authMiddleware, creditosMiddleware(5), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/dni?dni=${req.query.dni}`);
+});
+app.get("/api/ruc", authMiddleware, creditosMiddleware(5), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/ruc?ruc=${req.query.ruc}`);
+});
+app.get("/api/ruc-anexo", authMiddleware, creditosMiddleware(5), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/ruc-anexo?ruc=${req.query.ruc}`);
+});
+app.get("/api/ruc-representante", authMiddleware, creditosMiddleware(5), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/ruc-representante?ruc=${req.query.ruc}`);
+});
+app.get("/api/cee", authMiddleware, creditosMiddleware(5), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/cee?cee=${req.query.cee}`);
+});
+app.get("/api/soat-placa", authMiddleware, creditosMiddleware(5), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/placa?placa=${req.query.placa}`);
+});
+app.get("/api/licencia", authMiddleware, creditosMiddleware(5), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/licencia?dni=${req.query.dni}`);
+});
+app.get("/api/ficha", authMiddleware, creditosMiddleware(30), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_IMAGEN_V2_BASE_URL}/generar-ficha?dni=${req.query.dni}`);
+});
+app.get("/api/reniec", authMiddleware, creditosMiddleware(10), async (req, res) => {
+  const { dni } = req.query;
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/reniec?dni=${dni}`);
+});
+app.get("/api/denuncias-dni", authMiddleware, creditosMiddleware(12), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/denuncias-dni?dni=${req.query.dni}`);
+});
+app.get("/api/denuncias-placa", authMiddleware, creditosMiddleware(12), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/denuncias-placa?placa=${req.query.placa}`);
+});
+app.get("/api/sueldos", authMiddleware, creditosMiddleware(12), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/sueldos?dni=${req.query.dni}`);
+});
+app.get("/api/trabajos", authMiddleware, creditosMiddleware(12), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/trabajos?dni=${req.query.dni}`);
+});
+app.get("/api/sunat", authMiddleware, creditosMiddleware(12), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/sunat?data=${req.query.data}`);
+});
+app.get("/api/sunat-razon", authMiddleware, creditosMiddleware(10), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/sunat-razon?data=${req.query.data}`);
+});
+app.get("/api/consumos", authMiddleware, creditosMiddleware(12), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/consumos?dni=${req.query.dni}`);
+});
+app.get("/api/arbol", authMiddleware, creditosMiddleware(18), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/arbol?dni=${req.query.dni}`);
+});
+app.get("/api/familia1", authMiddleware, creditosMiddleware(12), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/familia1?dni=${req.query.dni}`);
+});
+app.get("/api/familia2", authMiddleware, creditosMiddleware(15), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/familia2?dni=${req.query.dni}`);
+});
+app.get("/api/familia3", authMiddleware, creditosMiddleware(18), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/familia3?dni=${req.query.dni}`);
+});
+app.get("/api/movimientos", authMiddleware, creditosMiddleware(12), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/movimientos?dni=${req.query.dni}`);
+});
+app.get("/api/matrimonios", authMiddleware, creditosMiddleware(12), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/matrimonios?dni=${req.query.dni}`);
+});
+app.get("/api/empresas", authMiddleware, creditosMiddleware(12), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/empresas?dni=${req.query.dni}`);
+});
+app.get("/api/direcciones", authMiddleware, creditosMiddleware(10), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/direcciones?dni=${req.query.dni}`);
+});
+app.get("/api/correos", authMiddleware, creditosMiddleware(10), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/correos?dni=${req.query.dni}`);
+});
+app.get("/api/telefonia-doc", authMiddleware, creditosMiddleware(10), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/telefonia-doc?documento=${req.query.documento}`);
+});
+app.get("/api/telefonia-num", authMiddleware, creditosMiddleware(12), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/telefonia-num?numero=${req.query.numero}`);
+});
+app.get("/api/vehiculos", authMiddleware, creditosMiddleware(15), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/vehiculos?placa=${req.query.placa}`);
+});
+app.get("/api/fiscalia-dni", authMiddleware, creditosMiddleware(15), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/fiscalia-dni?dni=${req.query.dni}`);
+});
+app.get("/api/fiscalia-nombres", authMiddleware, creditosMiddleware(18), async (req, res) => {
+  const { nombres, apepaterno, apematerno } = req.query;
+  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/fiscalia-nombres?nombres=${nombres}&apepaterno=${apepaterno}&apematerno=${apematerno}`, transformarRespuestaBusqueda);
+});
+app.get("/api/info-total", authMiddleware, creditosMiddleware(50), async (req, res) => {
+    await consumirAPI(req, res, `${NEW_PDF_V3_BASE_URL}/generar-ficha-pdf?dni=${req.query.dni}`);
+});
+
+// 🔹 Reemplazo de Factiliza
+app.get("/api/dni-full", authMiddleware, creditosMiddleware(4), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/dni?dni=${req.query.dni}`);
+});
+app.get("/api/c4", authMiddleware, creditosMiddleware(10), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/c4?dni=${req.query.dni}`);
+});
+app.get("/api/dnivaz", authMiddleware, creditosMiddleware(10), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/dnivaz?dni=${req.query.dni}`);
+});
+app.get("/api/dnivam", authMiddleware, creditosMiddleware(10), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/dnivam?dni=${req.query.dni}`);
+});
+app.get("/api/dnivel", authMiddleware, creditosMiddleware(10), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/dnivel?dni=${req.query.dni}`);
+});
+app.get("/api/dniveln", authMiddleware, creditosMiddleware(10), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/dniveln?dni=${req.query.dni}`);
+});
+app.get("/api/fa", authMiddleware, creditosMiddleware(10), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/fa?dni=${req.query.dni}`);
+});
+app.get("/api/fb", authMiddleware, creditosMiddleware(10), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/fb?dni=${req.query.dni}`);
+});
+app.get("/api/cnv", authMiddleware, creditosMiddleware(25), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/cnv?dni=${req.query.dni}`);
+});
+app.get("/api/cdef", authMiddleware, creditosMiddleware(25), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/cdef?dni=${req.query.dni}`);
+});
+app.get("/api/actancc", authMiddleware, creditosMiddleware(65), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/actancc?dni=${req.query.dni}`);
+});
+app.get("/api/actamcc", authMiddleware, creditosMiddleware(65), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/actamcc?dni=${req.query.dni}`);
+});
+app.get("/api/actadcc", authMiddleware, creditosMiddleware(65), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/actadcc?dni=${req.query.dni}`);
+});
+app.get("/api/tra", authMiddleware, creditosMiddleware(5), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/tra?dni=${req.query.dni}`);
+});
+app.get("/api/sue", authMiddleware, creditosMiddleware(8), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/sue?dni=${req.query.dni}`);
+});
+app.get("/api/cla", authMiddleware, creditosMiddleware(25), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/cla?dni=${req.query.dni}`);
+});
+app.get("/api/sune", authMiddleware, creditosMiddleware(4), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/sune?dni=${req.query.dni}`);
+});
+app.get("/api/cun", authMiddleware, creditosMiddleware(5), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/cun?dni=${req.query.dni}`);
+});
+app.get("/api/colp", authMiddleware, creditosMiddleware(6), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/colp?dni=${req.query.dni}`);
+});
+app.get("/api/mine", authMiddleware, creditosMiddleware(4), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/mine?dni=${req.query.dni}`);
+});
+app.get("/api/afp", authMiddleware, creditosMiddleware(6), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/afp?dni=${req.query.dni}`);
+});
+app.get("/api/antpen", authMiddleware, creditosMiddleware(10), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/antpen?dni=${req.query.dni}`);
+});
+app.get("/api/antpol", authMiddleware, creditosMiddleware(10), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/antpol?dni=${req.query.dni}`);
+});
+app.get("/api/antjud", authMiddleware, creditosMiddleware(10), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/antjud?dni=${req.query.dni}`);
+});
+app.get("/api/antpenv", authMiddleware, creditosMiddleware(10), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/antpenv?dni=${req.query.dni}`);
+});
+app.get("/api/dend", authMiddleware, creditosMiddleware(26), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/dend?dni=${req.query.dni}`);
+});
+app.get("/api/fis", authMiddleware, creditosMiddleware(32), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/fis?dni=${req.query.dni}`);
+});
+app.get("/api/fisdet", authMiddleware, creditosMiddleware(36), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/fisdet?dni=${req.query.dni}`);
+});
+app.get("/api/det", authMiddleware, creditosMiddleware(26), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/det?dni=${req.query.dni}`);
+});
+app.get("/api/rqh", authMiddleware, creditosMiddleware(8), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/rqh?dni=${req.query.dni}`);
+});
+app.get("/api/meta", authMiddleware, creditosMiddleware(26), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/meta?dni=${req.query.dni}`);
+});
+app.get("/api/osiptel", authMiddleware, creditosMiddleware(10), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/osiptel?query=${req.query.query}`);
+});
+app.get("/api/claro", authMiddleware, creditosMiddleware(5), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/claro?query=${req.query.query}`);
+});
+app.get("/api/entel", authMiddleware, creditosMiddleware(5), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/entel?query=${req.query.query}`);
+});
+app.get("/api/pro", authMiddleware, creditosMiddleware(12), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/pro?query=${req.query.query}`);
+});
+app.get("/api/sen", authMiddleware, creditosMiddleware(12), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/sen?query=${req.query.query}`);
+});
+app.get("/api/sbs", authMiddleware, creditosMiddleware(12), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/sbs?query=${req.query.query}`);
+});
+app.get("/api/pasaporte", authMiddleware, creditosMiddleware(20), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/pasaporte?query=${req.query.query}`);
+});
+app.get("/api/seeker", authMiddleware, creditosMiddleware(28), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/seeker?query=${req.query.query}`);
+});
+app.get("/api/bdir", authMiddleware, creditosMiddleware(28), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/bdir?query=${req.query.query}`);
+});
+app.get("/api/dence", authMiddleware, creditosMiddleware(25), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/dence?carnet_extranjeria=${req.query.carnet_extranjeria}`);
+});
+app.get("/api/denpas", authMiddleware, creditosMiddleware(25), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/denpas?pasaporte=${req.query.pasaporte}`);
+});
+app.get("/api/denci", authMiddleware, creditosMiddleware(25), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/denci?cedula_identidad=${req.query.cedula_identidad}`);
+});
+app.get("/api/denp", authMiddleware, creditosMiddleware(25), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/denp?placa=${req.query.placa}`);
+});
+app.get("/api/denar", authMiddleware, creditosMiddleware(25), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/denar?serie_armamento=${req.query.serie_armamento}`);
+});
+app.get("/api/dencl", authMiddleware, creditosMiddleware(25), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/dencl?clave_denuncia=${req.query.clave_denuncia}`);
+});
+app.get("/api/cedula", authMiddleware, creditosMiddleware(4), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/cedula?cedula=${req.query.cedula}`);
+});
+app.get("/api/venezolanos_nombres", authMiddleware, creditosMiddleware(4), async (req, res) => {
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/venezolanos_nombres?query=${req.query.query}`, transformarRespuestaBusqueda);
+});
+app.get("/api/dni_nombres", authMiddleware, creditosMiddleware(5), async (req, res) => {
+  const { nombres, apepaterno, apematerno } = req.query;
+  await consumirAPI(req, res, `${NEW_FACTILIZA_BASE_URL}/dni_nombres?nombres=${nombres}&apepaterno=${apepaterno}&apematerno=${apematerno}`, transformarRespuestaBusqueda);
+});
+
+/* ----------------------------------------------------------------------------------
+   7. ADMIN ENDPOINTS (Panel de Gestión de API)
+-------------------------------------------------------------------------------------*/
+
+app.get("/admin/users", adminAuthMiddleware, async (req, res) => {
+    try {
+        const usersRef = db.collection(USERS_COLLECTION);
+        const snapshot = await usersRef.get();
+        const users = snapshot.docs.map(doc => {
+            const data = doc.data();
+            return {
+                userId: doc.id,
+                email: data.email || 'N/A',
+                tipoPlan: data.tipoPlan,
+                creditos: data.creditos || 0,
+                ultimaConsulta: data.ultimaConsulta ? data.ultimaConsulta.toDate().toISOString() : 'Nunca',
+                ultimoDominio: data.ultimoDominio || 'Desconocido',
+                fechaCreacion: data.fechaCreacion ? data.fechaCreacion.toDate().toISOString() : 'N/A',
+            };
+        });
+        users.sort((a, b) => new Date(b.ultimaConsulta) - new Date(a.ultimaConsulta));
+
+        res.json({ ok: true, users });
+    } catch (error) {
+        console.error("Error al obtener usuarios:", error);
+        res.status(500).json({ ok: false, error: "Error interno al obtener usuarios" });
+    }
+});
 
 
-/* --------- Start server --------- */
-const PORT = process.env.PORT || 8080; // ¡Usando 8080 como puerto por defecto!
-app.listen(PORT, ()=> console.log("App running on", PORT));
+// -------------------- RUTA RAÍZ Y ARRANQUE DEL SERVIDOR --------------------
+
+app.get("/", (req, res) => {
+  res.json({
+    ok: true,
+    mensaje: "🚀 API Consulta PE / Developer Console funcionando correctamente.",
+    "consulta-pe": {
+      poweredBy: "Consulta PE",
+      info: "API oficial con endpoints actualizados y gestión de aplicaciones.",
+    },
+  });
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 Servidor corriendo en http://localhost:${PORT}`);
+});
