@@ -30,7 +30,7 @@ const G_OWNER = process.env.GITHUB_OWNER || 'tu-usuario-github'; // Reemplazar c
 const G_REPO = process.env.GITHUB_REPO || 'nombre-del-repositorio'; // Reemplazar con tu repo
 
 // Inicializar Octokit. Si el repositorio es público, puede no necesitar el token.
-const octokit = new Octokit({ auth: GITHUB_TOKEN });
+const octokit = new Octokit(GITHUB_TOKEN ? { auth: GITHUB_TOKEN } : {});
 
 // Agente HTTPS para axios
 const httpsAgent = new https.Agent({ rejectUnauthorized: false });
@@ -111,7 +111,7 @@ const guardarLogExterno = async (logData) => {
     const url = `${LOG_GUARDADO_BASE_URL}/log_consulta?host=${encodeURIComponent(logData.domain)}&hora=${encodeURIComponent(horaConsulta)}&endpoint=${encodeURIComponent(logData.endpoint)}&userId=public_access&costo=${logData.cost}`;
     
     try {
-        await axios.get(url);
+        await axios.get(url, { httpsAgent });
     } catch (e) {
         console.error("Error al guardar log en API externa:", e.message);
     }
@@ -207,7 +207,7 @@ const getOriginDomain = (req) => {
  * Función genérica para consumir API, procesar la respuesta y guardar el LOG EXTERNO.
  * 🛑 NOTA: Se ha eliminado toda la lógica de autenticación y créditos.
  */
-const consumirAPI = async (req, res, url, costo, transformer = procesarRespuesta) => {
+const consumirAPI = async (req, res, targetUrl, costo, transformer = procesarRespuesta) => {
   const domain = getOriginDomain(req);
   const logData = {
     userId: "public_access", // Hardcodeado ya que no hay autenticación
@@ -218,17 +218,22 @@ const consumirAPI = async (req, res, url, costo, transformer = procesarRespuesta
   };
     
   try {
-    const response = await axios.get(url);
+    // Usar httpsAgent para evitar problemas de certificado
+    const response = await axios.get(targetUrl, { httpsAgent });
+    
     // Solo se usa el procesador de respuesta, sin enviar el objeto user
     const processedResponse = transformer(response.data); 
 
     if (response.status >= 200 && response.status < 300) {
+        // Se llama a guardarLogExterno de forma asíncrona para no bloquear la respuesta
         guardarLogExterno(logData);
     }
     
     res.json(processedResponse);
   } catch (error) {
-    console.error("Error al consumir API:", error.message);
+    console.error(`Error al consumir API externa (${targetUrl}):`, error.message);
+    
+    // Crear respuesta de error
     const errorResponse = {
       ok: false,
       error: "Error en API externa",
@@ -236,7 +241,11 @@ const consumirAPI = async (req, res, url, costo, transformer = procesarRespuesta
     };
     
     const processedErrorResponse = procesarRespuesta(errorResponse);
-    res.status(error.response ? error.response.status : 500).json(processedErrorResponse);
+    
+    // Determinar el estado HTTP del error
+    const statusCode = error.response ? error.response.status : 500;
+    
+    res.status(statusCode).json(processedErrorResponse);
   }
 };
 
@@ -253,9 +262,21 @@ app.get("/api/public/apps/popular", async (req, res) => {
         const popularApps = [];
         for (const folder of appFolders) {
              try {
+                // **NOTA:** Aquí se sigue buscando meta.json, lo que asume una estructura uniforme.
+                // Si la estructura real es con versiones, este endpoint podría fallar en cargar todas las apps.
+                // Sin embargo, si *solo hay un archivo JSON por carpeta*, la corrección de abajo lo soluciona en el detalle.
                 const metaRaw = await octokit.repos.getContent({ 
                     owner: G_OWNER, repo: G_REPO, path: `${folder.path}/meta.json` 
+                }).catch(async (e) => {
+                    // Intento de cargar el primer archivo JSON si meta.json no existe (solo para /popular)
+                    const files = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: folder.path });
+                    const metaFile = files.data.find(f => f.name.startsWith('meta_') && f.name.endsWith('.json'));
+                    if (metaFile) {
+                        return octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: metaFile.path });
+                    }
+                    throw e; // Lanza el error 404 si tampoco hay archivos meta_*
                 });
+                
                 const meta = JSON.parse(Buffer.from(metaRaw.data.content, "base64").toString("utf8"));
                 
                 const enhancedApp = await enhanceAppMetadata(meta);
@@ -288,9 +309,18 @@ app.get("/api/public/apps/categories", async (req, res) => {
 
         for (const folder of appFolders) {
             try {
+                // **NOTA:** Misma lógica de manejo de archivos que en /popular
                 const metaRaw = await octokit.repos.getContent({ 
                     owner: G_OWNER, repo: G_REPO, path: `${folder.path}/meta.json` 
+                }).catch(async (e) => {
+                    const files = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: folder.path });
+                    const metaFile = files.data.find(f => f.name.startsWith('meta_') && f.name.endsWith('.json'));
+                    if (metaFile) {
+                        return octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: metaFile.path });
+                    }
+                    throw e; 
                 });
+                
                 const meta = JSON.parse(Buffer.from(metaRaw.data.content, "base64").toString("utf8"));
                 
                 const enhancedApp = await enhanceAppMetadata(meta);
@@ -344,9 +374,18 @@ app.get("/api/public/apps/search", async (req, res) => {
 
         for (const folder of appFolders) {
             try {
+                // **NOTA:** Misma lógica de manejo de archivos que en /popular
                 const metaRaw = await octokit.repos.getContent({ 
                     owner: G_OWNER, repo: G_REPO, path: `${folder.path}/meta.json` 
+                }).catch(async (e) => {
+                    const files = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: folder.path });
+                    const metaFile = files.data.find(f => f.name.startsWith('meta_') && f.name.endsWith('.json'));
+                    if (metaFile) {
+                        return octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: metaFile.path });
+                    }
+                    throw e; 
                 });
+                
                 const meta = JSON.parse(Buffer.from(metaRaw.data.content, "base64").toString("utf8"));
                 
                 const appName = (meta.title || meta.name || '').toLowerCase();
@@ -392,13 +431,43 @@ app.get("/api/public/apps/:appId", async (req, res) => {
     const { appId } = req.params;
 
     try {
-        const metaPath = `public/apps/${appId}/meta.json`;
+        const appPath = `public/apps/${appId}`;
+        let raw;
         
-        const raw = await octokit.repos.getContent({ 
-            owner: G_OWNER, 
-            repo: G_REPO, 
-            path: metaPath 
-        });
+        try {
+            // 1. Intenta cargar el archivo estándar (meta.json)
+            raw = await octokit.repos.getContent({ 
+                owner: G_OWNER, 
+                repo: G_REPO, 
+                path: `${appPath}/meta.json` 
+            });
+        } catch (e) {
+            // 2. Si falla (error 404 o similar), busca el archivo con nombre de versión (meta_VERSION.json)
+            if (e.status === 404) {
+                const files = await octokit.repos.getContent({ 
+                    owner: G_OWNER, 
+                    repo: G_REPO, 
+                    path: appPath 
+                });
+                
+                // Encuentra el primer archivo que comience con 'meta_' y termine con '.json'
+                const metaFile = files.data.find(f => f.name.startsWith('meta_') && f.name.endsWith('.json'));
+
+                if (!metaFile) {
+                     // Si no se encuentra ni meta.json ni meta_VERSION.json, lanza el error
+                    throw new Error(`Aplicación con ID ${appId} no encontrada en el catálogo público.`); 
+                }
+                
+                // Carga el contenido del archivo con nombre de versión
+                raw = await octokit.repos.getContent({ 
+                    owner: G_OWNER, 
+                    repo: G_REPO, 
+                    path: metaFile.path 
+                });
+            } else {
+                 throw e; // Relanza cualquier otro error que no sea 404
+            }
+        }
         
         const meta = JSON.parse(Buffer.from(raw.data.content, "base64").toString("utf8"));
         
@@ -411,11 +480,15 @@ app.get("/api/public/apps/:appId", async (req, res) => {
         return res.json({ ok: true, app: {...meta, ...enhancedApp} });
 
     } catch (e) {
-        if (e.status === 404) {
-            return res.status(404).json({ ok: false, error: `Aplicación con ID ${appId} no encontrada en el catálogo público.` });
+        // Aquí se captura el error 404 de GitHub o el error forzado.
+        const errorMessage = e.message || "Error interno al obtener los detalles de la aplicación.";
+        
+        if (errorMessage.includes("no encontrada")) {
+            return res.status(404).json({ ok: false, error: errorMessage });
         }
+
         console.error(`Error al obtener detalles de app ${appId}:`, e);
-        return res.status(500).json({ ok: false, error: "Error interno al obtener los detalles de la aplicación." });
+        return res.status(500).json({ ok: false, error: errorMessage });
     }
 });
 
