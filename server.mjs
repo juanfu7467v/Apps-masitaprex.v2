@@ -1041,49 +1041,81 @@ app.get("/api/public/apps/categories", async (req, res) => {
     }
 });
 
-// 🚀 NUEVO ENDPOINT: Cargar todas las apps disponibles
+/**
+ * 🚀 ENDPOINT CORREGIDO: Cargar todas las apps disponibles (Usando Git Tree para evitar truncamiento)
+ * GET /api/public/apps/all
+ */
 app.get("/api/public/apps/all", async (req, res) => {
     try {
-        const tree = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: CATALOG_PATH });
-        const appFolders = tree.data.filter(dir => dir.type === "dir");
-        
-        const allApps = [];
-        for (const folder of appFolders) {
-             try {
-                const metaRaw = await octokit.repos.getContent({ 
-                    owner: G_OWNER, repo: G_REPO, path: `${folder.path}/meta.json` 
-                }).catch(async (e) => {
-                    const files = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: folder.path });
-                    const metaFile = files.data.find(f => f.name.startsWith('meta_') && f.name.endsWith('.json'));
-                    if (metaFile) {
-                        return octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: metaFile.path });
-                    }
-                    throw e; 
+        // 1. Obtener el SHA de la rama principal (main o master)
+        const branchResponse = await octokit.repos.getBranch({
+            owner: G_OWNER,
+            repo: G_REPO,
+            branch: 'main', // Asume 'main' como rama principal. Si no funciona, prueba 'master'.
+        }).catch(async () => {
+            // Intentar 'master' si 'main' falla
+            return await octokit.repos.getBranch({
+                owner: G_OWNER,
+                repo: G_REPO,
+                branch: 'master',
+            });
+        });
+
+        const treeSha = branchResponse.data.commit.commit.tree.sha;
+
+        // 2. Obtener el árbol de contenido de forma recursiva (evita truncamiento)
+        const treeResponse = await octokit.git.getTree({
+            owner: G_OWNER,
+            repo: G_REPO,
+            tree_sha: treeSha,
+            recursive: 'true',
+        });
+
+        // 3. Filtrar las rutas para encontrar todos los archivos meta.json dentro de CATALOG_PATH
+        const metaFiles = treeResponse.data.tree.filter(item => 
+            item.path.startsWith(CATALOG_PATH + '/') && item.path.endsWith('/meta.json')
+        );
+
+        const allAppsPromises = metaFiles.map(async (file) => {
+            try {
+                // Descargar el contenido de cada meta.json
+                const metaRaw = await octokit.repos.getContent({
+                    owner: G_OWNER,
+                    repo: G_REPO,
+                    path: file.path,
                 });
                 
                 const meta = JSON.parse(Buffer.from(metaRaw.data.content, "base64").toString("utf8"));
                 
                 // Omitir aplicaciones que estén marcadas como no públicas
-                if (meta.isPublic === false) continue;
+                if (meta.isPublic === false) return null;
 
                 const enhancedApp = await enhanceAppMetadata(meta);
-                allApps.push(enhancedApp);
+                return enhancedApp;
 
              } catch (e) {
-                 console.warn(`No se pudo cargar o enriquecer meta.json para ${folder.name}: ${e.message}`);
+                 console.warn(`No se pudo cargar o enriquecer meta.json en ${file.path}: ${e.message}`);
+                 return null;
              }
-        }
+        });
+
+        // 4. Esperar a que se resuelvan todas las promesas y limpiar los nulos
+        const allApps = (await Promise.all(allAppsPromises)).filter(app => app !== null);
         
         return res.json({ 
             ok: true, 
             count: allApps.length, 
             apps: allApps, 
-            message: "Catálogo completo de aplicaciones públicas cargado." 
+            message: "Catálogo completo de aplicaciones públicas cargado utilizando Git Tree (carga no truncada)." 
         });
     } catch (e) {
-        if (e.status === 404) return res.json({ ok: true, apps: [], message: "El catálogo público (public/apps) está vacío." });
-        console.error("Error al listar todas las apps:", e);
-        return res.status(500).json({ ok: false, error: e.message });
+        if (e.status === 404) return res.json({ ok: true, apps: [], message: "El repositorio o el catálogo público no existen." });
+        console.error("Error al listar todas las apps (usando Git Tree):", e.message);
+        return res.status(500).json({ 
+            ok: false, 
+            error: "Error al obtener el árbol de archivos de GitHub. Asegúrate de que GITHUB_OWNER, GITHUB_REPO y GITHUB_TOKEN estén configurados correctamente, y que la rama 'main' o 'master' exista.", 
+            details: e.message 
+        });
     }
 });
 
