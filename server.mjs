@@ -97,6 +97,59 @@ async function enhanceAppMetadata(meta) {
     };
 }
 
+/**
+ * FUNCIÓN NUEVA: Intenta encontrar un AppId por su nombre común o fragmento.
+ * @param {string} searchName El nombre buscado (ej. 'facebook' o 'WhatsApp').
+ * @returns {Promise<string|null>} El appId si se encuentra una coincidencia, de lo contrario null.
+ */
+async function findAppIdByNameOrPackage(searchName) {
+    const lowerCaseSearch = searchName.toLowerCase();
+
+    try {
+        const tree = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: "public/apps" });
+        const appFolders = tree.data.filter(dir => dir.type === "dir");
+        
+        for (const folder of appFolders) {
+            const appId = folder.name;
+            
+            // 1. Coincidencia directa del paquete (aunque sea parcial)
+            if (appId.toLowerCase().includes(lowerCaseSearch)) {
+                return appId;
+            }
+            
+            // 2. Coincidencia por el nombre/título de la app
+            try {
+                // Se intenta cargar el metadato para buscar el título
+                const metaRaw = await octokit.repos.getContent({ 
+                    owner: G_OWNER, repo: G_REPO, path: `${folder.path}/meta.json` 
+                }).catch(async () => {
+                    const files = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: folder.path });
+                    const metaFile = files.data.find(f => f.name.startsWith('meta_') && f.name.endsWith('.json'));
+                    if (metaFile) {
+                        return octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: metaFile.path });
+                    }
+                    throw new Error("No meta file"); 
+                });
+                
+                const meta = JSON.parse(Buffer.from(metaRaw.data.content, "base64").toString("utf8"));
+                const appTitle = (meta.title || meta.name || '').toLowerCase();
+
+                if (appTitle.includes(lowerCaseSearch)) {
+                    return appId; // Devuelve el paquete (appId) de la app cuyo título coincide
+                }
+
+            } catch (e) {
+                 // Ignorar errores de carga de meta.json y continuar
+            }
+        }
+
+        return null; // No se encontró ninguna coincidencia
+    } catch (e) {
+        console.error("Error al buscar AppId por nombre:", e.message);
+        return null;
+    }
+}
+
 
 /* ----------------------------------------------------------------------------------
    2. HELPERS DE API DE CONSULTAS (SIMPLIFICADOS)
@@ -262,9 +315,7 @@ app.get("/api/public/apps/popular", async (req, res) => {
         const popularApps = [];
         for (const folder of appFolders) {
              try {
-                // **NOTA:** Aquí se sigue buscando meta.json, lo que asume una estructura uniforme.
-                // Si la estructura real es con versiones, este endpoint podría fallar en cargar todas las apps.
-                // Sin embargo, si *solo hay un archivo JSON por carpeta*, la corrección de abajo lo soluciona en el detalle.
+                // Lógica para manejar meta.json o meta_VERSION.json
                 const metaRaw = await octokit.repos.getContent({ 
                     owner: G_OWNER, repo: G_REPO, path: `${folder.path}/meta.json` 
                 }).catch(async (e) => {
@@ -309,7 +360,7 @@ app.get("/api/public/apps/categories", async (req, res) => {
 
         for (const folder of appFolders) {
             try {
-                // **NOTA:** Misma lógica de manejo de archivos que en /popular
+                // Lógica para manejar meta.json o meta_VERSION.json
                 const metaRaw = await octokit.repos.getContent({ 
                     owner: G_OWNER, repo: G_REPO, path: `${folder.path}/meta.json` 
                 }).catch(async (e) => {
@@ -374,7 +425,7 @@ app.get("/api/public/apps/search", async (req, res) => {
 
         for (const folder of appFolders) {
             try {
-                // **NOTA:** Misma lógica de manejo de archivos que en /popular
+                // Lógica para manejar meta.json o meta_VERSION.json
                 const metaRaw = await octokit.repos.getContent({ 
                     owner: G_OWNER, repo: G_REPO, path: `${folder.path}/meta.json` 
                 }).catch(async (e) => {
@@ -428,21 +479,50 @@ app.get("/api/public/apps/search", async (req, res) => {
 
 
 app.get("/api/public/apps/:appId", async (req, res) => {
-    const { appId } = req.params;
+    let { appId: inputId } = req.params;
+    let actualAppId = inputId; // Inicialmente, asumimos que el input es el AppId real
 
     try {
-        const appPath = `public/apps/${appId}`;
+        const checkAppPath = `public/apps/${inputId}`;
+        
+        // 1. **Comprobación directa** (¿Es un AppId válido y existente?)
+        try {
+            await octokit.repos.getContent({ 
+                owner: G_OWNER, 
+                repo: G_REPO, 
+                path: checkAppPath 
+            });
+            // Si la llamada no lanza error, el AppId es correcto, continuamos con el flujo normal.
+
+        } catch (e) {
+            // 2. **Si la comprobación directa falla**, intentamos buscar por nombre/fragmento.
+            if (e.status === 404) {
+                const foundAppId = await findAppIdByNameOrPackage(inputId);
+                
+                if (foundAppId) {
+                    actualAppId = foundAppId; // Reemplazamos el input con el AppId real encontrado
+                } else {
+                    // Si no se encuentra ni como ID ni por nombre, lanzamos el error 404.
+                    throw new Error(`Aplicación con ID o nombre '${inputId}' no encontrada en el catálogo público.`);
+                }
+            } else {
+                 throw e; // Relanzamos cualquier otro error de GitHub
+            }
+        }
+
+        // --- Inicio del proceso de carga real usando el actualAppId ---
+        const appPath = `public/apps/${actualAppId}`;
         let raw;
         
         try {
-            // 1. Intenta cargar el archivo estándar (meta.json)
+            // 3. Intenta cargar el archivo estándar (meta.json)
             raw = await octokit.repos.getContent({ 
                 owner: G_OWNER, 
                 repo: G_REPO, 
                 path: `${appPath}/meta.json` 
             });
         } catch (e) {
-            // 2. Si falla (error 404 o similar), busca el archivo con nombre de versión (meta_VERSION.json)
+            // 4. Si falla (error 404 o similar), busca el archivo con nombre de versión (meta_VERSION.json)
             if (e.status === 404) {
                 const files = await octokit.repos.getContent({ 
                     owner: G_OWNER, 
@@ -454,8 +534,8 @@ app.get("/api/public/apps/:appId", async (req, res) => {
                 const metaFile = files.data.find(f => f.name.startsWith('meta_') && f.name.endsWith('.json'));
 
                 if (!metaFile) {
-                     // Si no se encuentra ni meta.json ni meta_VERSION.json, lanza el error
-                    throw new Error(`Aplicación con ID ${appId} no encontrada en el catálogo público.`); 
+                     // Esto debería ser raro si findAppIdByNameOrPackage funcionó, pero es un buen control
+                    throw new Error(`Archivos de metadatos no encontrados para la aplicación con ID ${actualAppId}.`); 
                 }
                 
                 // Carga el contenido del archivo con nombre de versión
@@ -465,7 +545,7 @@ app.get("/api/public/apps/:appId", async (req, res) => {
                     path: metaFile.path 
                 });
             } else {
-                 throw e; // Relanza cualquier otro error que no sea 404
+                 throw e; // Relanza cualquier otro error
             }
         }
         
@@ -477,17 +557,23 @@ app.get("/api/public/apps/:appId", async (req, res) => {
             enhancedApp.downloadUrl = meta.externalDownloadUrl;
         }
 
-        return res.json({ ok: true, app: {...meta, ...enhancedApp} });
+        return res.json({ 
+            ok: true, 
+            app: {...meta, ...enhancedApp},
+            // Opcional: para saber si se usó la búsqueda por nombre
+            search_used: inputId !== actualAppId ? true : undefined,
+            actual_app_id: actualAppId
+        });
 
     } catch (e) {
         // Aquí se captura el error 404 de GitHub o el error forzado.
         const errorMessage = e.message || "Error interno al obtener los detalles de la aplicación.";
         
-        if (errorMessage.includes("no encontrada")) {
+        if (errorMessage.includes("no encontrada") || e.status === 404) {
             return res.status(404).json({ ok: false, error: errorMessage });
         }
 
-        console.error(`Error al obtener detalles de app ${appId}:`, e);
+        console.error(`Error al obtener detalles de app ${inputId}:`, e);
         return res.status(500).json({ ok: false, error: errorMessage });
     }
 });
