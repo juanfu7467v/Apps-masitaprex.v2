@@ -969,6 +969,7 @@ app.get("/api/public/apps/popular", async (req, res) => {
              }
         }
         
+        // Ordenar por puntuación (simulada o real) para ser "popular"
         popularApps.sort((a, b) => (b.score || 0) - (a.score || 0));
 
         return res.json({ ok: true, apps: popularApps });
@@ -1036,6 +1037,52 @@ app.get("/api/public/apps/categories", async (req, res) => {
     } catch (e) {
         if (e.status === 404) return res.json({ ok: true, apps: [], message: "El catálogo público (public/apps) está vacío." });
         console.error("Error al listar apps por categorías:", e);
+        return res.status(500).json({ ok: false, error: e.message });
+    }
+});
+
+// 🚀 NUEVO ENDPOINT: Cargar todas las apps disponibles
+app.get("/api/public/apps/all", async (req, res) => {
+    try {
+        const tree = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: CATALOG_PATH });
+        const appFolders = tree.data.filter(dir => dir.type === "dir");
+        
+        const allApps = [];
+        for (const folder of appFolders) {
+             try {
+                const metaRaw = await octokit.repos.getContent({ 
+                    owner: G_OWNER, repo: G_REPO, path: `${folder.path}/meta.json` 
+                }).catch(async (e) => {
+                    const files = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: folder.path });
+                    const metaFile = files.data.find(f => f.name.startsWith('meta_') && f.name.endsWith('.json'));
+                    if (metaFile) {
+                        return octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: metaFile.path });
+                    }
+                    throw e; 
+                });
+                
+                const meta = JSON.parse(Buffer.from(metaRaw.data.content, "base64").toString("utf8"));
+                
+                // Omitir aplicaciones que estén marcadas como no públicas
+                if (meta.isPublic === false) continue;
+
+                const enhancedApp = await enhanceAppMetadata(meta);
+                allApps.push(enhancedApp);
+
+             } catch (e) {
+                 console.warn(`No se pudo cargar o enriquecer meta.json para ${folder.name}: ${e.message}`);
+             }
+        }
+        
+        return res.json({ 
+            ok: true, 
+            count: allApps.length, 
+            apps: allApps, 
+            message: "Catálogo completo de aplicaciones públicas cargado." 
+        });
+    } catch (e) {
+        if (e.status === 404) return res.json({ ok: true, apps: [], message: "El catálogo público (public/apps) está vacío." });
+        console.error("Error al listar todas las apps:", e);
         return res.status(500).json({ ok: false, error: e.message });
     }
 });
