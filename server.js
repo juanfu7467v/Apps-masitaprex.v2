@@ -1314,5 +1314,5 @@ app.get("/api/public/apps/search", async (req, res) => {
 
 
 /* --------- Start server --------- */
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080; // ¡Usando 8080 como puerto por defecto!
 app.listen(PORT, ()=> console.log("App running on", PORT));
