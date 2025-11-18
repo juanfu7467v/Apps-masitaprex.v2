@@ -130,8 +130,6 @@ app.use(express.static('public')); // Para el Catálogo Público
    1. HELPERS DE LA DEVELOPER CONSOLE
 -------------------------------------------------------------------------------------*/
 
-// ... (El resto de los helpers de la Developer Console se mantienen intactos, ya que no dependen de Factiliza o Lederdata)
-
 /**
  * Crea o actualiza un archivo en GitHub. (Developer Console Helper)
  */
@@ -237,20 +235,20 @@ async function enhanceAppMetadata(meta) {
         console.warn("Firestore no inicializado. Se usarán datos predeterminados para estadísticas.");
     }
     
-    const latestVersion = meta.versions && meta.versions.length > 0
-        ? meta.versions.slice(-1)[0]
-        : null;
-
+    // Asumiendo que el meta ya está en formato Google Play o similar (como tu ejemplo)
+    const latestVersion = meta.version || 'N/A';
+    
     let downloadsFromStats = 0;
     
     if (db && db.collection) {
         try {
-            const statsDoc = await db.collection(STATS_COLLECTION).doc(meta.appId).get();
+            // Usamos appId o packageName del JSON para buscar estadísticas
+            const statsDoc = await db.collection(STATS_COLLECTION).doc(meta.appId || meta.packageName || 'unknown').get();
             if (statsDoc.exists) {
                 downloadsFromStats = statsDoc.data().downloads || 0;
             }
         } catch (e) {
-            console.warn(`No se pudieron obtener estadísticas para ${meta.appId}: ${e.message}`);
+            console.warn(`No se pudieron obtener estadísticas para ${meta.appId || meta.packageName}: ${e.message}`);
         }
     }
 
@@ -259,20 +257,21 @@ async function enhanceAppMetadata(meta) {
         ? downloadsFromStats.toLocaleString() + "+" 
         : meta.installs || "0+"; 
 
-    const sizeInBytes = latestVersion?.apk_size || 0;
+    // Aquí asumimos que el tamaño debe calcularse o tomarse de un campo específico si no está en meta.apkPath
+    const sizeInBytes = meta.apk_size || 0; // Si el JSON no tiene este campo, será 0
 
     return {
-        appId: meta.appId,
-        name: meta.name || meta.title,
+        appId: meta.appId || meta.packageName,
+        name: meta.title || meta.name,
         description: meta.summary || meta.description,
-        icon: meta.iconUrl || meta.icon,
-        category: meta.category || meta.genre || 'General',
+        icon: meta.icon,
+        category: meta.genre || 'General',
         score: meta.score,
         ratings: meta.ratings,
         installs: installsText, 
         size_mb: formatBytesToMB(sizeInBytes), 
-        version: latestVersion?.version_name || meta.version || 'N/A',
-        updatedAt: meta.updatedAt || meta.updated
+        version: latestVersion,
+        updatedAt: meta.updated || meta.updatedAt 
     };
 }
 
@@ -1322,6 +1321,7 @@ app.get("/api/public/apps/popular", async (req, res) => {
              }
         }
         
+        // Usamos el campo 'score' (puntuación) para ordenar popularidad
         popularApps.sort((a, b) => (b.score || 0) - (a.score || 0));
 
         return res.json({ ok: true, apps: popularApps });
@@ -1350,6 +1350,7 @@ app.get("/api/public/apps/categories", async (req, res) => {
                 const meta = JSON.parse(Buffer.from(metaRaw.data.content, "base64").toString("utf8"));
                 
                 const enhancedApp = await enhanceAppMetadata(meta);
+                // El campo category puede venir como meta.category o meta.genre
                 const appCategory = enhancedApp.category.toUpperCase();
 
                 if (category && appCategory !== category.toUpperCase()) {
@@ -1387,7 +1388,8 @@ app.get("/api/public/apps/search", async (req, res) => {
     const { query } = req.query;
     
     if (!query) {
-        return res.status(400).json({ ok: false, error: "El parámetro 'query' es requerido para la búsqueda." });
+        // Devolvemos el listado popular si no hay query
+        return res.redirect(307, '/api/public/apps/popular');
     }
     
     const lowerCaseQuery = query.toLowerCase();
@@ -1405,10 +1407,11 @@ app.get("/api/public/apps/search", async (req, res) => {
                 });
                 const meta = JSON.parse(Buffer.from(metaRaw.data.content, "base64").toString("utf8"));
                 
-                const appName = (meta.name || meta.title || '').toLowerCase();
-                const appDescription = (meta.description || '').toLowerCase();
+                const appName = (meta.title || meta.name || '').toLowerCase();
+                const appDescription = (meta.description || meta.summary || '').toLowerCase();
+                const appId = (meta.appId || meta.packageName || '').toLowerCase();
 
-                if (appName.includes(lowerCaseQuery) || appDescription.includes(lowerCaseQuery)) {
+                if (appName.includes(lowerCaseQuery) || appDescription.includes(lowerCaseQuery) || appId.includes(lowerCaseQuery)) {
                     const enhancedApp = await enhanceAppMetadata(meta);
                     searchResults.push(enhancedApp);
                 }
@@ -1417,6 +1420,20 @@ app.get("/api/public/apps/search", async (req, res) => {
                  console.warn(`No se pudo cargar meta.json durante la búsqueda para ${folder.name}: ${e.message}`);
             }
         }
+        
+        // Buscamos una coincidencia exacta de AppId (e.g., com.facebook.orca) para priorizar
+        searchResults.sort((a, b) => {
+             const aId = a.appId.toLowerCase();
+             const bId = b.appId.toLowerCase();
+             
+             const aMatchesQuery = aId === lowerCaseQuery;
+             const bMatchesQuery = bId === lowerCaseQuery;
+             
+             if (aMatchesQuery && !bMatchesQuery) return -1;
+             if (!aMatchesQuery && bMatchesQuery) return 1;
+             return (b.score || 0) - (a.score || 0);
+        });
+
 
         return res.json({ 
             ok: true, query: query, results: searchResults, count: searchResults.length 
@@ -1428,6 +1445,45 @@ app.get("/api/public/apps/search", async (req, res) => {
         return res.status(500).json({ ok: false, error: e.message });
     }
 });
+
+/**
+ * Endpoint para obtener los detalles de una aplicación específica (Facebook, TikTok, etc.)
+ * Usamos el `appId` o `packageName` como identificador.
+ */
+app.get("/api/public/apps/:appId", async (req, res) => {
+    const { appId } = req.params;
+
+    try {
+        // La ruta en el repositorio es public/apps/[appId]/meta.json
+        const metaPath = `public/apps/${appId}/meta.json`;
+        
+        const raw = await octokit.repos.getContent({ 
+            owner: G_OWNER, 
+            repo: G_REPO, 
+            path: metaPath 
+        });
+        
+        const meta = JSON.parse(Buffer.from(raw.data.content, "base64").toString("utf8"));
+        
+        // Enriquecer y retornar los detalles completos
+        const enhancedApp = await enhanceAppMetadata(meta);
+        
+        // Si el JSON incluye el campo 'externalDownloadUrl' lo incluimos en la respuesta
+        if (meta.externalDownloadUrl) {
+            enhancedApp.downloadUrl = meta.externalDownloadUrl;
+        }
+
+        return res.json({ ok: true, app: {...meta, ...enhancedApp} });
+
+    } catch (e) {
+        if (e.status === 404) {
+            return res.status(404).json({ ok: false, error: `Aplicación con ID ${appId} no encontrada en el catálogo público.` });
+        }
+        console.error(`Error al obtener detalles de app ${appId}:`, e);
+        return res.status(500).json({ ok: false, error: "Error interno al obtener los detalles de la aplicación." });
+    }
+});
+
 
 /* ----------------------------------------------------------------------------------
    6. ENDPOINTS: API DE CONSULTAS (Mantenidos)
@@ -1560,6 +1616,53 @@ app.get("/admin/users", adminAuthMiddleware, async (req, res) => {
     } catch (error) {
         console.error("Error al obtener usuarios:", error);
         res.status(500).json({ ok: false, error: "Error interno al obtener usuarios" });
+    }
+});
+
+// NUEVO ENDPOINT DE ADMIN PARA CARGAR CATÁLOGO EXTERNO
+app.post("/admin/load-catalog-app", adminAuthMiddleware, async (req, res) => {
+    const { metadata_json } = req.body;
+    
+    if (!metadata_json) return res.status(400).json({ ok: false, error: "El objeto 'metadata_json' es requerido." });
+
+    const meta = typeof metadata_json === 'string' ? JSON.parse(metadata_json) : metadata_json;
+    const appId = meta.appId || meta.packageName;
+
+    if (!appId) {
+        return res.status(400).json({ ok: false, error: "El objeto metadata_json debe contener 'appId' o 'packageName'." });
+    }
+    
+    try {
+        // La ruta en el repositorio es public/apps/[appId]/meta.json
+        const pathInRepo = `public/apps/${appId}/meta.json`;
+
+        // Modificamos el objeto para asegurar que el appId esté presente
+        meta.appId = appId;
+
+        // Limpieza de datos sensibles o innecesarios para el catálogo público
+        delete meta.developerInternalID;
+        delete meta.developerLegalEmail;
+        delete meta.developerLegalPhoneNumber;
+        
+        // El contenido JSON se convierte a Base64 para GitHub
+        const contentBase64 = Buffer.from(JSON.stringify(meta, null, 2)).toString("base64");
+
+        await createOrUpdateGithubFile(
+            pathInRepo,
+            contentBase64,
+            `Cargar/Actualizar app de catálogo público: ${appId}`
+        );
+        
+        return res.json({ 
+            ok: true, 
+            message: `Aplicación ${appId} cargada/actualizada con éxito en el catálogo público.`, 
+            appId: appId,
+            github_path: pathInRepo
+        });
+
+    } catch (e) {
+        console.error(`Error al cargar la aplicación ${appId} al catálogo:`, e);
+        return res.status(500).json({ ok: false, error: "Error interno al cargar la aplicación al catálogo.", details: e.message });
     }
 });
 
