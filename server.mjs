@@ -27,8 +27,6 @@ try {
         project_id: process.env.FIREBASE_PROJECT_ID,
         private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
         // **IMPORTANTE**: Reemplazar '\n' literales por saltos de línea reales.
-        // Esto es crucial para que la clave sea válida si fue guardada como una
-        // variable de entorno de una sola línea.
         private_key: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
         client_email: process.env.FIREBASE_CLIENT_EMAIL,
         client_id: process.env.FIREBASE_CLIENT_ID,
@@ -265,6 +263,7 @@ const getAppStatistics = async (appId) => {
 
 /**
  * Middleware para autenticar al desarrollador usando x-api-key contra Firestore real.
+ * 🛑 CORRECCIÓN CLAVE: Busca en Firestore por el campo `apiKey`, no por el ID del documento.
  */
 const authenticateDeveloper = async (req, res, next) => {
     const apiKey = req.headers['x-api-key'];
@@ -284,16 +283,23 @@ const authenticateDeveloper = async (req, res, next) => {
     }
 
     try {
-        const userDoc = await db.collection('usuarios').doc(apiKey).get();
+        // -------------------------------------------------------------------------
+        // 💡 CORRECCIÓN: Usar .where('apiKey', '==', apiKey) para buscar por valor
+        // -------------------------------------------------------------------------
+        const snapshot = await db.collection('usuarios').where('apiKey', '==', apiKey).limit(1).get();
 
-        if (!userDoc.exists) {
+        if (snapshot.empty) {
             return res.status(403).json({ 
                 ok: false, 
                 error: "API Key inválida o no encontrada en la colección de usuarios." 
             });
         }
 
+        const userDoc = snapshot.docs[0];
         const developerData = userDoc.data();
+        
+        // Agregar el ID del documento (que es el userId)
+        developerData.userId = userDoc.id; 
 
         req.developer = developerData; 
         req.apiKey = apiKey;
@@ -524,8 +530,13 @@ app.use(express.static('public'));
 app.get("/api/dev/me", authenticateDeveloper, (req, res) => {
     res.json({
         ok: true,
-        message: `Bienvenido/a, ${req.developer.developerName}. Tu API Key es válida.`,
-        developerInfo: req.developer,
+        // Usar el userId del documento para el developerInfo
+        developerInfo: {
+            userId: req.developer.userId, 
+            developerName: req.developer.developerName || req.developer.email,
+            email: req.developer.email,
+        },
+        message: `Bienvenido/a, ${req.developer.developerName || req.developer.email}. Tu API Key es válida.`,
         apiKey: req.apiKey
     });
 });
@@ -557,7 +568,7 @@ app.post("/api/dev/apps/submit/playstore", authenticateDeveloper, async (req, re
             briefDescription: briefDescription,
             status: "pending_review",
             submittedBy: req.developer.userId, 
-            developerName: req.developer.developerName,
+            developerName: req.developer.developerName || req.developer.email,
             submissionDate: new Date().toISOString(),
             source: "playstore_scraped",
             // Campos adicionales para la reconstrucción del catálogo
@@ -631,7 +642,7 @@ app.post("/api/dev/apps/submit/manual", authenticateDeveloper, async (req, res) 
             category: category,
             summary: briefDescription,
             description: fullDescription,
-            developer: req.developer.developerName,
+            developer: req.developer.developerName || req.developer.email,
             developerWebsite: website,
             country: country,
             externalDownloadUrl: directDownloadUrl,
@@ -640,7 +651,7 @@ app.post("/api/dev/apps/submit/manual", authenticateDeveloper, async (req, res) 
             video: youtubeUrl,
             status: "pending_review",
             submittedBy: req.developer.userId, 
-            developerName: req.developer.developerName,
+            developerName: req.developer.developerName || req.developer.email,
             submissionDate: new Date().toISOString(),
             source: "manual_submission",
             // Datos del catálogo (simulados)
@@ -699,7 +710,9 @@ app.get("/api/dev/apps", authenticateDeveloper, async (req, res) => {
         
         // **INICIO SIMULACIÓN** (Reemplazar con la lógica real de GitHub)
         const appsData = getCatalogData();
-        const developerApps = appsData.apps.filter(app => app.developerName === req.developer.developerName);
+        // Nota: Si el campo 'developerName' en el catálogo es el email o el nombre, 
+        // usa la lógica que mejor se ajuste a tu modelo de datos.
+        const developerApps = appsData.apps.filter(app => (app.developerName || '').toLowerCase() === (req.developer.developerName || req.developer.email).toLowerCase());
 
         for (const app of developerApps) {
             const stats = await getAppStatistics(app.appId);
@@ -764,7 +777,7 @@ app.get("/api/dev/apps", authenticateDeveloper, async (req, res) => {
 
         res.json({
             ok: true,
-            developer: req.developer.developerName,
+            developer: req.developer.developerName || req.developer.email,
             pendingApps: pendingApps,
             approvedApps: approvedApps,
             message: "Lista de aplicaciones con historial de versiones, estado y estadísticas (reales o simuladas).",
