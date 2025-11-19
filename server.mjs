@@ -20,12 +20,30 @@ dotenv.config();
 let db;
 try {
     if (admin.apps.length === 0) {
-        admin.initializeApp({});
+        // 🛑 SOLUCIÓN AL ERROR: Proporcionar credenciales explícitamente.
+        const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH; 
+        
+        if (!serviceAccountPath) {
+            // Error en la configuración de la variable de entorno
+            throw new Error("Variable de entorno FIREBASE_SERVICE_ACCOUNT_PATH no definida en .env.");
+        }
+        
+        // Cargar el JSON de la cuenta de servicio de forma síncrona
+        // Usamos path.resolve para manejar rutas relativas de manera segura.
+        const serviceAccountJson = fs.readFileSync(path.resolve(serviceAccountPath), 'utf8');
+        const serviceAccount = JSON.parse(serviceAccountJson);
+
+        // Inicializar Firebase Admin con las credenciales cargadas
+        admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount),
+            // El Project ID se infiere del archivo de credenciales, resolviendo el error.
+        });
     }
     db = admin.firestore();
     console.log("✅ Conexión real a Firebase Admin y Firestore establecida.");
 } catch (error) {
-    console.error("🚫 ERROR: No se pudo inicializar Firebase Admin:", error.message);
+    // Si el error es sobre la falta de ID, lo muestro específicamente
+    console.error("🚫 ERROR: No se pudo inicializar Firebase Admin (Verifica FIREBASE_SERVICE_ACCOUNT_PATH y el archivo JSON):", error.message);
 }
 
 // -------------------- CONSTANTES DE LA API DE CONSULTAS (Tus URLs) --------------------
@@ -728,7 +746,7 @@ app.get("/api/dev/apps", authenticateDeveloper, async (req, res) => {
                     currentData.dislikes++;
                     currentData.users[developerId] = 'dislike';
                 } else if (action === 'remove' && userAction) {
-                    delete currentData.users[developerId];
+                    currentData.users[developerId];
                 }
                 
                 t.set(docRef, currentData, { merge: true });
@@ -997,3 +1015,4 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Servidor corriendo en http://localhost:${PORT}`);
 });
+
