@@ -16,17 +16,45 @@ import admin from 'firebase-admin';
 // ==============================================================================
 dotenv.config();
 
-// Inicialización de Firebase Admin (para Firestore)
+// ==============================================================================
+// 🟢 CORRECCIÓN: Inicialización de Firebase Admin
+// ==============================================================================
+
 let db;
 try {
+    const serviceAccount = {
+        type: process.env.FIREBASE_TYPE,
+        project_id: process.env.FIREBASE_PROJECT_ID,
+        private_key_id: process.env.FIREBASE_PRIVATE_KEY_ID,
+        // **IMPORTANTE**: Reemplazar '\n' literales por saltos de línea reales.
+        // Esto es crucial para que la clave sea válida si fue guardada como una
+        // variable de entorno de una sola línea.
+        private_key: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+        client_email: process.env.FIREBASE_CLIENT_EMAIL,
+        client_id: process.env.FIREBASE_CLIENT_ID,
+        auth_uri: process.env.FIREBASE_AUTH_URI,
+        token_uri: process.env.FIREBASE_TOKEN_URI,
+        auth_provider_x509_cert_url: process.env.FIREBASE_AUTH_PROVIDER_X509_CERT_URL,
+        client_x509_cert_url: process.env.FIREBASE_CLIENT_X509_CERT_URL,
+        universe_domain: process.env.FIREBASE_UNIVERSE_DOMAIN
+    };
+
     if (admin.apps.length === 0) {
-        admin.initializeApp({});
+        admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount)
+        });
     }
     db = admin.firestore();
     console.log("✅ Conexión real a Firebase Admin y Firestore establecida.");
 } catch (error) {
-    console.error("🚫 ERROR: No se pudo inicializar Firebase Admin:", error.message);
+    console.error("🚫 ERROR: No se pudo inicializar Firebase Admin. Asegúrate de que todas las variables FIREBASE_* estén configuradas y sean válidas.", error.message);
+    // Para depuración: si la clave es demasiado larga, puede ser que el shell/servidor
+    // la esté truncando o escapando mal.
+    if (process.env.FIREBASE_PRIVATE_KEY && process.env.FIREBASE_PRIVATE_KEY.length < 500) {
+         console.warn("ADVERTENCIA: La clave privada parece ser demasiado corta. Revise la variable de entorno.");
+    }
 }
+
 
 // -------------------- CONSTANTES DE LA API DE CONSULTAS (Tus URLs) --------------------
 const NEW_API_V1_BASE_URL = process.env.NEW_API_V1_BASE_URL || "https://banckend-poxyv1-cosultape-masitaprex.fly.dev";
@@ -235,9 +263,6 @@ const getAppStatistics = async (appId) => {
     };
 };
 
-
-// ... [Resto de funciones: authenticateDeveloper, uploadImageToGithub, saveMetadataToGithub, getOriginDomain, etc.]
-
 /**
  * Middleware para autenticar al desarrollador usando x-api-key contra Firestore real.
  */
@@ -247,7 +272,7 @@ const authenticateDeveloper = async (req, res, next) => {
     if (!db) {
         return res.status(500).json({
             ok: false,
-            error: "Error de configuración: Conexión a Firestore no disponible."
+            error: "Error de configuración: Conexión a Firestore no disponible. Revise la inicialización."
         });
     }
 
@@ -997,4 +1022,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Servidor corriendo en http://localhost:${PORT}`);
 });
-
