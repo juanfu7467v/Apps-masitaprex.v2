@@ -375,12 +375,22 @@ async function uploadImageToGithub(base64Data, appId, filename, isPending = true
     const commitMessage = `Add ${filename} for ${appId} - by ${appId}`;
     
     try {
+        // Primero, intentar obtener el SHA actual para sobrescribir (si existe)
+        let sha = undefined;
+        try {
+            const fileData = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: contentPath });
+            sha = fileData.data.sha;
+        } catch (e) {
+            // Se ignora el 404, el archivo no existe
+        }
+        
         const response = await octokit.repos.createOrUpdateFileContents({
             owner: G_OWNER,
             repo: G_REPO,
             path: contentPath,
             message: commitMessage,
             content: data,
+            sha: sha, // Se incluye el SHA si se encontró, para sobrescribir
         });
 
         // La descarga es más rápida que el raw.githubusercontent.com
@@ -389,6 +399,35 @@ async function uploadImageToGithub(base64Data, appId, filename, isPending = true
     } catch (e) {
         console.error(`Error al subir ${filename} a GitHub:`, e.message);
         return fullMatch; // Devolver el base64 original si falla (solo como fallback de depuración)
+    }
+}
+
+/**
+ * 💡 NUEVA FUNCIÓN: Elimina un archivo de GitHub.
+ */
+async function deleteFileFromGithub(appId, filename, isPending = true) {
+    const contentPath = `${isPending ? PENDING_PATH : CATALOG_PATH}/${appId}/${filename}`;
+    const commitMessage = `Remove ${filename} for ${appId}`;
+    
+    try {
+        const fileData = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: contentPath });
+        const sha = fileData.data.sha;
+
+        await octokit.repos.deleteFile({
+            owner: G_OWNER,
+            repo: G_REPO,
+            path: contentPath,
+            message: commitMessage,
+            sha: sha, 
+        });
+        
+        return true;
+    } catch (e) {
+        // Ignorar si el archivo no existe (404)
+        if (e.status !== 404) {
+            console.error(`Error al eliminar ${filename} de GitHub:`, e.message);
+        }
+        return false;
     }
 }
 
@@ -751,6 +790,159 @@ app.post("/api/dev/apps/submit/manual", authenticateDeveloper, async (req, res) 
     }
 });
 
+/**
+ * 💡 NUEVO ENDPOINT: Eliminar/Reemplazar Icono, Capturas, Imagen Destacada o Video.
+ * PUT /api/dev/apps/:appId/media
+ */
+app.put("/api/dev/apps/:appId/media", authenticateDeveloper, async (req, res) => {
+    const { appId } = req.params;
+    const { 
+        iconBase64, 
+        featuredImageBase64, 
+        screenshotsBase64 = null, // null = no cambiar, [] = borrar todas, [base64, ...] = reemplazar
+        youtubeUrl 
+    } = req.body;
+    
+    // 1. Determinar si la app está en PENDING o CATALOG
+    let isPending = true;
+    let currentMeta;
+    let metaPath = `${PENDING_PATH}/${appId}/meta.json`;
+
+    try {
+        let fileData = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: metaPath });
+        currentMeta = JSON.parse(Buffer.from(fileData.data.content, "base64").toString("utf8"));
+    } catch (e) {
+        // Si no está en PENDING, intentar en CATALOG
+        metaPath = `${CATALOG_PATH}/${appId}/meta.json`;
+        try {
+            let fileData = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: metaPath });
+            currentMeta = JSON.parse(Buffer.from(fileData.data.content, "base64").toString("utf8"));
+            isPending = false;
+        } catch (e) {
+            return res.status(404).json({ ok: false, error: `Aplicación con ID '${appId}' no encontrada en estado pendiente o aprobado.` });
+        }
+    }
+    
+    // 2. Validar que el desarrollador sea el propietario (o administrador, si se implementa)
+    const developerMatch = (currentMeta.submittedBy === req.developer.userId) || 
+                          ((currentMeta.developerName || '').toLowerCase() === (req.developer.developerName || req.developer.email).toLowerCase());
+                          
+    if (!developerMatch) {
+         return res.status(403).json({ 
+             ok: false, 
+             error: "Acceso denegado. No eres el desarrollador que subió esta aplicación." 
+         });
+    }
+
+    let updates = {
+        icon: currentMeta.icon,
+        featuredImage: currentMeta.featuredImage,
+        screenshots: currentMeta.screenshots || [],
+        video: currentMeta.video,
+        updatedAt: new Date().getTime(),
+    };
+    let commitMessage = `Update media for ${appId}:`;
+    let changesMade = false;
+
+    try {
+        // --- 3. Actualizar ICONO ---
+        if (iconBase64 !== undefined && iconBase64 !== null) {
+            if (iconBase64.length > 0) {
+                updates.icon = await uploadImageToGithub(iconBase64, appId, "icon.png", isPending);
+                commitMessage += " Icon replaced.";
+                changesMade = true;
+            } else {
+                // Eliminar ícono
+                if (updates.icon && !updates.icon.startsWith('http')) await deleteFileFromGithub(appId, "icon.png", isPending);
+                updates.icon = null;
+                commitMessage += " Icon removed.";
+                changesMade = true;
+            }
+        }
+        
+        // --- 4. Actualizar IMAGEN DESTACADA ---
+        if (featuredImageBase64 !== undefined && featuredImageBase64 !== null) {
+            if (featuredImageBase64.length > 0) {
+                updates.featuredImage = await uploadImageToGithub(featuredImageBase64, appId, "featured.png", isPending);
+                commitMessage += " Featured replaced.";
+                changesMade = true;
+            } else {
+                // Eliminar imagen destacada
+                if (updates.featuredImage && !updates.featuredImage.startsWith('http')) await deleteFileFromGithub(appId, "featured.png", isPending);
+                updates.featuredImage = null;
+                commitMessage += " Featured removed.";
+                changesMade = true;
+            }
+        }
+
+        // --- 5. Actualizar URL de VIDEO (YouTube) ---
+        if (youtubeUrl !== undefined && youtubeUrl !== null) {
+            updates.video = (youtubeUrl.length > 0) ? youtubeUrl : null;
+            commitMessage += updates.video ? " Video URL updated." : " Video URL removed.";
+            changesMade = true;
+        }
+        
+        // --- 6. Actualizar CAPTURAS DE PANTALLA ---
+        if (screenshotsBase64 !== null) {
+            // Borrar capturas antiguas que se subieron (las de Play Store no se pueden borrar del repo)
+            for (let i = 1; i <= 8; i++) {
+                // Intentar borrar las que tengan el nombre estándar de la subida manual
+                await deleteFileFromGithub(appId, `screenshot_${i}.png`, isPending);
+            }
+            
+            updates.screenshots = [];
+            // Subir las nuevas capturas
+            for (let i = 0; i < Math.min(screenshotsBase64.length, 8); i++) {
+                const ssUrl = await uploadImageToGithub(screenshotsBase64[i], appId, `screenshot_${i + 1}.png`, isPending);
+                if (ssUrl) updates.screenshots.push(ssUrl);
+            }
+
+            commitMessage += updates.screenshots.length > 0 ? ` Screenshots replaced (${updates.screenshots.length} new).` : " Screenshots removed.";
+            changesMade = true;
+        }
+
+
+        if (!changesMade) {
+            return res.status(200).json({ ok: true, message: "No se proporcionaron cambios para aplicar. Metadata sin modificar." });
+        }
+
+        // 7. Guardar la nueva metadata
+        const newMeta = { ...currentMeta, ...updates };
+
+        const commit = await saveMetadataToGithub(
+            appId, 
+            newMeta, 
+            isPending, 
+            commitMessage
+        );
+        
+        // 8. Reconstruir el catálogo si la app está APROBADA
+        if (!isPending) {
+             await rebuildCatalogFile();
+        }
+        
+        res.json({
+            ok: true,
+            message: `✅ Archivos multimedia actualizados exitosamente. Aplicación ${isPending ? 'en revisión' : 'aprobada'}.`,
+            appId: appId,
+            commitUrl: commit.html_url,
+            newMetadata: {
+                icon: newMeta.icon,
+                featuredImage: newMeta.featuredImage,
+                screenshots: newMeta.screenshots,
+                video: newMeta.video
+            }
+        });
+
+    } catch (e) {
+        console.error("Error al actualizar media:", e.message);
+        res.status(500).json({ 
+            ok: false, 
+            error: "Error interno al procesar la solicitud: " + e.message 
+        });
+    }
+});
+
 
 /**
  * 🚀 FUNCIÓN 3: Panel de Versiones, Me Gusta y Estadísticas
@@ -766,7 +958,7 @@ app.get("/api/dev/apps", authenticateDeveloper, async (req, res) => {
         
         // **INICIO SIMULACIÓN** (Reemplazar con la lógica real de GitHub)
         const appsData = getCatalogData();
-        const developerApps = appsData.apps.filter(app => (app.developerName || '').toLowerCase() === (req.developer.developerName || req.developer.email).toLowerCase());
+        const developerApps = appsData.apps.filter(app => (app.author || '').toLowerCase() === (req.developer.developerName || req.developer.email).toLowerCase() || (app.developerName || '').toLowerCase() === (req.developer.developerName || req.developer.email).toLowerCase());
 
         for (const app of developerApps) {
             const stats = await getAppStatistics(app.appId);
@@ -1086,7 +1278,8 @@ app.get("/", (req, res) => {
     mensaje: "🚀 Catálogo Público / API Consulta PE y Developer Console funcionando.",
     "developer-console": {
       docs: "/api/dev/me",
-      submission: "/api/dev/apps/submit/*"
+      submission: "/api/dev/apps/submit/*",
+      media_update: "PUT /api/dev/apps/:appId/media" // 💡 NUEVO
     },
     "catalogo-publico": {
         full_catalog: "/api/public/apps/all",
