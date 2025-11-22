@@ -624,6 +624,7 @@ app.get("/api/dev/me", authenticateDeveloper, (req, res) => {
  * 💡 NUEVO ENDPOINT: Búsqueda de Play Store.
  * GET /api/dev/apps/lookup/playstore?packageId={id}
  * Función: Debe buscar en Google Play y devolver el nombre, ícono y una descripción.
+ * 🛑 CORRECCIÓN: Implementar Fallback de País (PE a US).
  */
 app.get("/api/dev/apps/lookup/playstore", authenticateDeveloper, async (req, res) => {
     const { packageId } = req.query;
@@ -632,45 +633,70 @@ app.get("/api/dev/apps/lookup/playstore", authenticateDeveloper, async (req, res
         return res.status(400).json({ ok: false, error: "El parámetro 'packageId' es obligatorio." });
     }
 
+    let playStoreMeta;
+    let countryUsed = 'pe'; // 1er intento con Perú
+
     try {
-        const playStoreMeta = await gplay.app({ appId: packageId, country: 'pe' });
-
-        res.json({
-            ok: true,
-            message: `Datos de la aplicación '${playStoreMeta.title}' obtenidos de Google Play Store.`,
-            appData: {
-                appId: playStoreMeta.appId,
-                name: playStoreMeta.title,
-                iconUrl: playStoreMeta.icon,
-                // Usar 'summary' (descripción corta) o 'description' (descripción larga)
-                briefDescription: playStoreMeta.summary, 
-                fullDescription: playStoreMeta.descriptionHTML,
-                category: playStoreMeta.genre,
-                developer: playStoreMeta.developer,
-                // Datos adicionales útiles
-                version: playStoreMeta.version,
-                updated: playStoreMeta.updated,
-                installs: playStoreMeta.installs,
-                score: playStoreMeta.score,
-                ratings: playStoreMeta.ratings,
-                screenshots: playStoreMeta.screenshots, // Capturas de pantalla
-                video: playStoreMeta.video // URL de video
-            }
-        });
-
+        // Intento 1: Perú
+        playStoreMeta = await gplay.app({ appId: packageId, country: countryUsed });
+        
     } catch (e) {
-        if (e.message && e.message.includes('App not found')) {
-            return res.status(404).json({ 
+        
+        // Si falla en Perú, intentamos con EE. UU. (US) como fallback global.
+        if (e.message && (e.message.includes('App not found') || e.message.includes('Not Found'))) {
+            countryUsed = 'us';
+            try {
+                // Intento 2: EE. UU.
+                playStoreMeta = await gplay.app({ appId: packageId, country: countryUsed });
+                
+            } catch (e2) {
+                // Si falla en US también, la app realmente no existe o está muy restringida.
+                if (e2.message && (e2.message.includes('App not found') || e2.message.includes('Not Found'))) {
+                    return res.status(404).json({ 
+                        ok: false, 
+                        error: `AppId '${packageId}' no encontrada en Google Play Store (PE y US). Verifica el ID.` 
+                    });
+                }
+                // Si el error de US es diferente (ej. de red), se propaga.
+                console.error("Error al buscar app en Play Store (Fallback US):", e2.message);
+                return res.status(500).json({ 
+                    ok: false, 
+                    error: "Error interno al procesar la solicitud con fallback US. " + e2.message 
+                });
+            }
+        } else {
+             // Si el error de PE no es "Not Found" (ej. error de red), se propaga.
+            console.error("Error al buscar app en Play Store (Intento PE):", e.message);
+            return res.status(500).json({ 
                 ok: false, 
-                error: `AppId '${packageId}' no encontrada en Google Play Store.` 
+                error: "Error interno al procesar la solicitud. " + e.message 
             });
         }
-        console.error("Error al buscar app en Play Store:", e.message);
-        res.status(500).json({ 
-            ok: false, 
-            error: "Error interno al procesar la solicitud. " + e.message 
-        });
     }
+    
+    // Si llegamos aquí, playStoreMeta contiene los datos.
+    res.json({
+        ok: true,
+        message: `Datos de la aplicación '${playStoreMeta.title}' obtenidos de Google Play Store (Usando país: ${countryUsed}).`,
+        appData: {
+            appId: playStoreMeta.appId,
+            name: playStoreMeta.title,
+            iconUrl: playStoreMeta.icon,
+            // Usar 'summary' (descripción corta) o 'description' (descripción larga)
+            briefDescription: playStoreMeta.summary, 
+            fullDescription: playStoreMeta.descriptionHTML,
+            category: playStoreMeta.genre,
+            developer: playStoreMeta.developer,
+            // Datos adicionales útiles
+            version: playStoreMeta.version,
+            updated: playStoreMeta.updated,
+            installs: playStoreMeta.installs,
+            score: playStoreMeta.score,
+            ratings: playStoreMeta.ratings,
+            screenshots: playStoreMeta.screenshots, // Capturas de pantalla
+            video: playStoreMeta.video // URL de video
+        }
+    });
 });
 
 
@@ -678,6 +704,7 @@ app.get("/api/dev/apps/lookup/playstore", authenticateDeveloper, async (req, res
  * 🚀 FUNCIÓN 1: Subir App desde Play Store (Busca y Enriquecer)
  * POST /api/dev/apps/submit/playstore
  * (No se modifican los campos de SO/Autor/Video aquí, ya que se obtienen de Play Store)
+ * 🛑 CORRECCIÓN: Implementar Fallback de País (PE a US) en la subida.
  */
 app.post("/api/dev/apps/submit/playstore", authenticateDeveloper, async (req, res) => {
     const { playStoreId, directDownloadUrl, briefDescription } = req.body;
@@ -686,9 +713,31 @@ app.post("/api/dev/apps/submit/playstore", authenticateDeveloper, async (req, re
         return res.status(400).json({ ok: false, error: "El campo 'playStoreId' es obligatorio." });
     }
     
+    let playStoreMeta;
     try {
-        const playStoreMeta = await gplay.app({ appId: playStoreId, country: 'pe' });
-        
+        // Intento 1: Perú
+        playStoreMeta = await gplay.app({ appId: playStoreId, country: 'pe' });
+    } catch (e) {
+        // Fallback a EE. UU. si falla
+        try {
+            playStoreMeta = await gplay.app({ appId: playStoreId, country: 'us' });
+        } catch (e2) {
+             if (e2.message && (e2.message.includes('App not found') || e2.message.includes('Not Found'))) {
+                 return res.status(404).json({ 
+                     ok: false, 
+                     error: `AppId '${playStoreId}' no encontrada en Google Play Store (PE y US). Verifica el ID.` 
+                 });
+             }
+             // Error interno en el scraping
+             console.error("Error al enviar app Play Store (Fallback US):", e2.message);
+             return res.status(500).json({ 
+                 ok: false, 
+                 error: "Error interno al procesar la solicitud con fallback US. " + e2.message 
+             });
+        }
+    }
+    
+    try {
         const metadata = {
             appId: playStoreMeta.appId,
             title: playStoreMeta.title,
@@ -735,13 +784,7 @@ app.post("/api/dev/apps/submit/playstore", authenticateDeveloper, async (req, re
         });
 
     } catch (e) {
-        if (e.message && e.message.includes('App not found')) {
-            return res.status(404).json({ 
-                ok: false, 
-                error: `AppId '${playStoreId}' no encontrada en Google Play Store.` 
-            });
-        }
-        console.error("Error al enviar app Play Store:", e.message);
+        console.error("Error al guardar metadata en GitHub:", e.message);
         res.status(500).json({ 
             ok: false, 
             error: "Error interno al procesar la solicitud. " + e.message 
