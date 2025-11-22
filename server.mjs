@@ -367,8 +367,13 @@ async function uploadImageToGithub(base64Data, appId, filename, isPending = true
     const [fullMatch, mimeType, extension, data] = match;
     
     // Límite de 2MB para imágenes
-    if (data.length > 1024 * 1024 * 2) { 
-        throw new Error(`El archivo ${filename} excede el límite de 2MB.`);
+    // 💡 CORRECCIÓN: Usar el tamaño de la cadena Base64 antes de ser decodificada (aproximadamente 4/3 del tamaño binario)
+    const sizeInBytesEstimate = (data.length * 0.75) - (data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0);
+    const MAX_SIZE_BYTES = 1024 * 1024 * 2; // 2 MB
+    
+    if (sizeInBytesEstimate > MAX_SIZE_BYTES) { 
+        // Lanza un error para ser capturado en el endpoint
+        throw new Error(`El archivo ${filename} excede el límite de 2MB. Tamaño estimado: ${formatBytesToMB(sizeInBytesEstimate)}`);
     }
 
     const contentPath = `${isPending ? PENDING_PATH : CATALOG_PATH}/${appId}/${filename}`;
@@ -389,7 +394,7 @@ async function uploadImageToGithub(base64Data, appId, filename, isPending = true
             repo: G_REPO,
             path: contentPath,
             message: commitMessage,
-            content: data,
+            content: data, // El Base64 sin el prefijo 'data:...'
             sha: sha, // Se incluye el SHA si se encontró, para sobrescribir
         });
 
@@ -398,7 +403,8 @@ async function uploadImageToGithub(base64Data, appId, filename, isPending = true
         
     } catch (e) {
         console.error(`Error al subir ${filename} a GitHub:`, e.message);
-        return fullMatch; // Devolver el base64 original si falla (solo como fallback de depuración)
+        // Devolver null o el base64 original si falla puede ser arriesgado. Mejor lanzar el error.
+        throw new Error(`Error al subir imagen a GitHub: ${e.message}`);
     }
 }
 
@@ -588,7 +594,7 @@ const consumirAPI = async (req, res, targetUrl, costo, transformer = procesarRes
 -------------------------------------------------------------------------------------*/
 
 const app = express();
-// Aumentar el límite de body para aceptar múltiples imágenes Base64 grandes (20MB)
+// 🚀 CORRECCIÓN CLAVE: Aumentar el límite de body para aceptar múltiples imágenes Base64 grandes (20MB)
 app.use(express.json({ limit: "20mb" })); 
 
 const corsOptions = {
@@ -633,8 +639,9 @@ app.get("/api/dev/apps/lookup/playstore", authenticateDeveloper, async (req, res
     }
 
     try {
-        // 🛑 CAMBIO CLAVE: Usar 'us' en lugar de 'pe' para mayor compatibilidad
-        const playStoreMeta = await gplay.app({ appId: packageId, country: 'us' });
+        // 🛑 CORRECCIÓN APLICADA: Se elimina el parámetro 'country: us' 
+        // para mejorar la compatibilidad y capacidad de búsqueda de gplay.
+        const playStoreMeta = await gplay.app({ appId: packageId }); 
 
         res.json({
             ok: true,
@@ -660,12 +667,16 @@ app.get("/api/dev/apps/lookup/playstore", authenticateDeveloper, async (req, res
         });
 
     } catch (e) {
-        if (e.message && e.message.includes('App not found')) {
+        // 💡 MEJORA: Unifica el mensaje de error para "No encontrada"
+        const isNotFound = e.message && (e.message.includes('App not found') || e.message.includes('Not Found'));
+        
+        if (isNotFound) {
             return res.status(404).json({ 
                 ok: false, 
-                error: `AppId '${packageId}' no encontrada en Google Play Store (país: US).` 
+                error: `Aplicación no encontrada en Play Store. Verifica el ID: '${packageId}'.` 
             });
         }
+        
         console.error("Error al buscar app en Play Store:", e.message);
         res.status(500).json({ 
             ok: false, 
@@ -738,8 +749,8 @@ app.post("/api/dev/apps/submit/playstore", authenticateDeveloper, async (req, re
     }
     
     try {
-        // 🛑 CAMBIO CLAVE: Usar 'us' en lugar de 'pe'
-        const playStoreMeta = await gplay.app({ appId: playStoreId, country: 'us' });
+        // 🛑 CORRECCIÓN APLICADA: Se elimina el parámetro 'country: us'
+        const playStoreMeta = await gplay.app({ appId: playStoreId });
         
         const metadata = {
             appId: playStoreMeta.appId,
@@ -787,10 +798,11 @@ app.post("/api/dev/apps/submit/playstore", authenticateDeveloper, async (req, re
         });
 
     } catch (e) {
-        if (e.message && e.message.includes('App not found')) {
+        const isNotFound = e.message && (e.message.includes('App not found') || e.message.includes('Not Found'));
+        if (isNotFound) {
             return res.status(404).json({ 
                 ok: false, 
-                error: `AppId '${playStoreId}' no encontrada en Google Play Store (país: US).` 
+                error: `AppId '${playStoreId}' no encontrada en Google Play Store.` 
             });
         }
         console.error("Error al enviar app Play Store:", e.message);
@@ -835,7 +847,7 @@ app.post("/api/dev/apps/submit/manual", authenticateDeveloper, async (req, res) 
         const featuredImageUrl = await uploadImageToGithub(featuredImageBase64, appId, "featured.png");
         
         const screenshotUrls = [];
-        // Limitar a 8 capturas de pantalla
+        // 💡 CORRECCIÓN: Limitar a 8 capturas de pantalla, tal como lo solicitaste.
         for (let i = 0; i < Math.min(screenshotsBase64.length, 8); i++) {
             const ssUrl = await uploadImageToGithub(screenshotsBase64[i], appId, `screenshot_${i + 1}.png`);
             if (ssUrl) screenshotUrls.push(ssUrl);
@@ -891,7 +903,9 @@ app.post("/api/dev/apps/submit/manual", authenticateDeveloper, async (req, res) 
 
     } catch (e) {
         console.error("Error al enviar app Manual:", e.message);
-        res.status(500).json({ 
+        // Devolver un error 413 si es un problema de payload muy grande
+        const statusCode = e.message.includes("excede el límite de 2MB") ? 413 : 500;
+        res.status(statusCode).json({ 
             ok: false, 
             error: "Error interno al procesar la solicitud: " + e.message 
         });
@@ -993,13 +1007,14 @@ app.put("/api/dev/apps/:appId/media", authenticateDeveloper, async (req, res) =>
         // --- 6. Actualizar CAPTURAS DE PANTALLA ---
         if (screenshotsBase64 !== null) {
             // Borrar capturas antiguas que se subieron (las de Play Store no se pueden borrar del repo)
+            // Se asume que el nombre es screenshot_N.png
             for (let i = 1; i <= 8; i++) {
                 // Intentar borrar las que tengan el nombre estándar de la subida manual
                 await deleteFileFromGithub(appId, `screenshot_${i}.png`, isPending);
             }
             
             updates.screenshots = [];
-            // Subir las nuevas capturas
+            // Subir las nuevas capturas. 💡 CORRECCIÓN: Aplicar límite de 8 aquí también.
             for (let i = 0; i < Math.min(screenshotsBase64.length, 8); i++) {
                 const ssUrl = await uploadImageToGithub(screenshotsBase64[i], appId, `screenshot_${i + 1}.png`, isPending);
                 if (ssUrl) updates.screenshots.push(ssUrl);
@@ -1044,7 +1059,9 @@ app.put("/api/dev/apps/:appId/media", authenticateDeveloper, async (req, res) =>
 
     } catch (e) {
         console.error("Error al actualizar media:", e.message);
-        res.status(500).json({ 
+        // Devolver un error 413 si es un problema de payload muy grande
+        const statusCode = e.message.includes("excede el límite de 2MB") ? 413 : 500;
+        res.status(statusCode).json({ 
             ok: false, 
             error: "Error interno al procesar la solicitud: " + e.message 
         });
