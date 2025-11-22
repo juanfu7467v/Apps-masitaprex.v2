@@ -621,6 +621,60 @@ app.get("/api/dev/me", authenticateDeveloper, (req, res) => {
 });
 
 /**
+ * 💡 NUEVO ENDPOINT: Búsqueda de Play Store.
+ * GET /api/dev/apps/lookup/playstore?packageId={id}
+ * Función: Debe buscar en Google Play y devolver el nombre, ícono y una descripción.
+ */
+app.get("/api/dev/apps/lookup/playstore", authenticateDeveloper, async (req, res) => {
+    const { packageId } = req.query;
+
+    if (!packageId) {
+        return res.status(400).json({ ok: false, error: "El parámetro 'packageId' es obligatorio." });
+    }
+
+    try {
+        const playStoreMeta = await gplay.app({ appId: packageId, country: 'pe' });
+
+        res.json({
+            ok: true,
+            message: `Datos de la aplicación '${playStoreMeta.title}' obtenidos de Google Play Store.`,
+            appData: {
+                appId: playStoreMeta.appId,
+                name: playStoreMeta.title,
+                iconUrl: playStoreMeta.icon,
+                // Usar 'summary' (descripción corta) o 'description' (descripción larga)
+                briefDescription: playStoreMeta.summary, 
+                fullDescription: playStoreMeta.descriptionHTML,
+                category: playStoreMeta.genre,
+                developer: playStoreMeta.developer,
+                // Datos adicionales útiles
+                version: playStoreMeta.version,
+                updated: playStoreMeta.updated,
+                installs: playStoreMeta.installs,
+                score: playStoreMeta.score,
+                ratings: playStoreMeta.ratings,
+                screenshots: playStoreMeta.screenshots, // Capturas de pantalla
+                video: playStoreMeta.video // URL de video
+            }
+        });
+
+    } catch (e) {
+        if (e.message && e.message.includes('App not found')) {
+            return res.status(404).json({ 
+                ok: false, 
+                error: `AppId '${packageId}' no encontrada en Google Play Store.` 
+            });
+        }
+        console.error("Error al buscar app en Play Store:", e.message);
+        res.status(500).json({ 
+            ok: false, 
+            error: "Error interno al procesar la solicitud. " + e.message 
+        });
+    }
+});
+
+
+/**
  * 🚀 FUNCIÓN 1: Subir App desde Play Store (Busca y Enriquecer)
  * POST /api/dev/apps/submit/playstore
  * (No se modifican los campos de SO/Autor/Video aquí, ya que se obtienen de Play Store)
@@ -649,7 +703,8 @@ app.post("/api/dev/apps/submit/playstore", authenticateDeveloper, async (req, re
             developer: playStoreMeta.developer,
             externalDownloadUrl: directDownloadUrl,
             briefDescription: briefDescription,
-            status: "pending_review",
+            // 💡 ESTADO DE LA APLICACIÓN
+            status: "pending_review", 
             submittedBy: req.developer.userId, 
             developerName: req.developer.developerName || req.developer.email,
             submissionDate: new Date().toISOString(),
@@ -751,7 +806,8 @@ app.post("/api/dev/apps/submit/manual", authenticateDeveloper, async (req, res) 
             video: youtubeUrl, // 💡 NUEVO
             operatingSystem: operatingSystem || 'Desconocido', // 💡 NUEVO
             author: author || req.developer.developerName || 'Desarrollador No Especificado', // 💡 NUEVO
-            status: "pending_review",
+            // 💡 ESTADO DE LA APLICACIÓN
+            status: "pending_review", 
             submittedBy: req.developer.userId, 
             developerName: req.developer.developerName || req.developer.email,
             submissionDate: new Date().toISOString(),
@@ -1279,14 +1335,16 @@ app.get("/", (req, res) => {
     "developer-console": {
       docs: "/api/dev/me",
       submission: "/api/dev/apps/submit/*",
-      media_update: "PUT /api/dev/apps/:appId/media" // 💡 NUEVO
+      media_update: "PUT /api/dev/apps/:appId/media", 
+      // 💡 NUEVO ENDPOINT
+      playstore_lookup: "GET /api/dev/apps/lookup/playstore?packageId={id}"
     },
     "catalogo-publico": {
         full_catalog: "/api/public/apps/all",
         search: "/api/public/apps/search?query=...",
         popular: "/api/public/apps/popular",
         details: "/api/public/apps/:appId",
-        interaccion: "/api/public/apps/:appId/:action (like|dislike|remove)" // 💡 NUEVO
+        interaccion: "/api/public/apps/:appId/:action (like|dislike|remove)" 
     }
   });
 });
