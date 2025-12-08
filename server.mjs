@@ -248,6 +248,9 @@ async function enhanceAppMetadata(meta) {
         operatingSystem: meta.operatingSystem || 'Multiplataforma',
         // Se añade el estado para el panel del desarrollador
         status: meta.status || (meta.isPublic === true ? 'approved' : 'pending_review'),
+        // Añadir el ID del desarrollador para el filtro en el panel
+        submittedBy: meta.submittedBy || 'Desconocido', 
+        developerName: meta.developerName || 'Desconocido'
     };
 }
 
@@ -382,12 +385,12 @@ const authenticateDeveloper = async (req, res, next) => {
 
 /**
  * Transforma un archivo base64 (de un input de formulario) en una URL de GitHub blob.
- * Acepta Base64 o URL directa (URL directa solo funciona si isPending es falso o si es una URL de Play Store)
+ * Acepta Base64 o URL directa.
  */
 async function uploadImageToGithub(base64DataOrUrl, appId, filename, isPending = true) {
     if (!base64DataOrUrl) return null;
     
-    // Si ya es una URL, la devolvemos (ej. URLs de Play Store)
+    // 🛑 CORRECCIÓN CLAVE: Si ya es una URL, la devolvemos inmediatamente.
     if (base64DataOrUrl.startsWith('http')) {
         return base64DataOrUrl; 
     }
@@ -740,11 +743,11 @@ app.get("/api/dev/apps/search/playstore", authenticateDeveloper, async (req, res
     }
 
     try {
-        // 🛑 CAMBIO CLAVE: Usar gplay.search con 'us'
+        // 🛑 CORRECCIÓN CLAVE: Uso correcto de gplay.search
         const results = await gplay.search({
             term: query,
             num: 10, // Limitar a 10 resultados para no sobrecargar
-            lang: 'en',
+            lang: 'es', // Usar español para resultados relevantes si es posible
             country: 'us'
         });
 
@@ -769,6 +772,10 @@ app.get("/api/dev/apps/search/playstore", authenticateDeveloper, async (req, res
 
     } catch (e) {
         console.error("Error al buscar apps en Play Store:", e.message);
+        // Si no hay resultados, gplay.search puede devolver un array vacío o lanzar un error genérico en algunos casos.
+        if (e.message.includes('App not found')) {
+             return res.status(404).json({ ok: false, error: `No se encontraron resultados para la búsqueda '${query}'.` });
+        }
         res.status(500).json({ 
             ok: false, 
             error: "Error interno al procesar la solicitud. " + e.message 
@@ -793,8 +800,7 @@ app.post("/api/dev/apps/submit/playstore", authenticateDeveloper, async (req, re
         // 🛑 CORRECCIÓN APLICADA: Se elimina el parámetro 'country: us'
         const playStoreMeta = await gplay.app({ appId: playStoreId });
         
-        // 1. Subida de archivos (el ícono es una URL, no se sube si ya existe)
-        // Se puede usar uploadImageToGithub, que lo detecta como URL y lo devuelve
+        // 1. Subida de archivos (el ícono es una URL, se usa la función para manejar la URL)
         const iconUrl = await uploadImageToGithub(playStoreMeta.icon, playStoreId, "icon.png", true);
 
         // 💡 MEJORA: Obtener las capturas de pantalla de Play Store (que son URLs)
@@ -869,7 +875,7 @@ app.post("/api/dev/apps/submit/playstore", authenticateDeveloper, async (req, re
 /**
  * 🚀 FUNCIÓN 2: Subir App no Play Store (Carga Manual Completa)
  * POST /api/dev/apps/submit/manual
- * 💡 MEJORAS: Soporte para Base64 (subida desde galería), video de YouTube, SO y Autor.
+ * 💡 MEJORAS: Soporte para Base64/URL directa, video de YouTube, SO y Autor.
  */
 app.post("/api/dev/apps/submit/manual", authenticateDeveloper, async (req, res) => {
     const { 
@@ -887,19 +893,19 @@ app.post("/api/dev/apps/submit/manual", authenticateDeveloper, async (req, res) 
     if (!appName || !packageName || !directDownloadUrl || !iconBase64 || !briefDescription) {
         return res.status(400).json({ 
             ok: false, 
-            error: "Faltan campos obligatorios: appName, packageName, directDownloadUrl, iconBase64, briefDescription." 
+            error: "Faltan campos obligatorios: appName, packageName, directDownloadUrl, iconBase64/Url, briefDescription." 
         });
     }
 
     const appId = packageName;
     
     try {
-        // 1. Subida de archivos (Base64) a GitHub
+        // 1. Subida de archivos (Base64 O URL directa) a GitHub
         const iconUrl = await uploadImageToGithub(iconBase64, appId, "icon.png", true);
         const featuredImageUrl = await uploadImageToGithub(featuredImageBase64, appId, "featured.png", true);
         
         const screenshotUrls = [];
-        // 💡 CORRECCIÓN: Limitar a 8 capturas de pantalla, tal como lo solicitaste.
+        // 💡 CORRECCIÓN: Limitar a 8 capturas de pantalla, y aceptar Base64 O URL
         for (let i = 0; i < Math.min(screenshotsBase64.length, 8); i++) {
             // Se usa un nombre genérico, la extensión será determinada por la función
             const ssUrl = await uploadImageToGithub(screenshotsBase64[i], appId, `screenshot_${i + 1}.png`, true); 
@@ -1135,13 +1141,11 @@ app.get("/api/dev/apps", authenticateDeveloper, async (req, res) => {
     try {
         let allDeveloperApps = [];
         
-        // 1. Obtener todas las apps APROBADAS del catálogo
+        // 1. Obtener todas las apps APROBADAS del catálogo (ya pre-filtradas y enriquecidas)
         const appsData = getCatalogData();
         // Filtrar por submittedBy (userId de Firestore) O por developerName (fallback/compatibilidad)
         const approvedApps = appsData.apps.filter(app => 
-            app.submittedBy === developerUserId || 
-            (app.author || '').toLowerCase() === (req.developer.developerName || req.developer.email).toLowerCase() ||
-            (app.developerName || '').toLowerCase() === (req.developer.developerName || req.developer.email).toLowerCase()
+            app.submittedBy === developerUserId
         );
 
         for (const app of approvedApps) {
