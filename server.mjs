@@ -82,7 +82,8 @@ const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 // Rutas clave
 const PENDING_PATH = "public/apps_pending";
 const CATALOG_PATH = "public/apps";
-const CATALOG_FILE = path.join(process.cwd(), 'public', 'apps_data.json'); // El archivo único centralizado
+// 💡 CLAVE: Ruta del archivo JSON centralizado que será leído por el catálogo público
+const CATALOG_FILE = path.join(process.cwd(), 'public', 'apps_data.json'); 
 
 // Cache en Memoria para el catálogo
 let appsCatalogCache = {
@@ -100,6 +101,7 @@ let appsCatalogCache = {
 /**
  * Función central para reconstruir el archivo apps_data.json.
  * Debería llamarse cada vez que una app es APROBADA o ACTUALIZADA.
+ * 💡 CLAVE: Lee el árbol de contenido de GitHub para generar el archivo local.
  */
 async function rebuildCatalogFile() {
     console.log("🛠️ Iniciando reconstrucción del catálogo apps_data.json...");
@@ -124,7 +126,7 @@ async function rebuildCatalogFile() {
             recursive: 'true',
         });
 
-        // 3. Filtrar los archivos meta.json en la ruta del catálogo
+        // 3. Filtrar los archivos meta.json en la ruta del catálogo APROBADO
         const metaFiles = treeResponse.data.tree.filter(item => 
             item.path.startsWith(CATALOG_PATH + '/') && item.path.endsWith('/meta.json') && item.type === 'blob'
         );
@@ -140,13 +142,12 @@ async function rebuildCatalogFile() {
                 
                 const meta = JSON.parse(Buffer.from(blobResponse.data.content, "base64").toString("utf8"));
                 
+                // Solo incluir si está marcada como pública
                 if (meta.isPublic === false) return null;
 
                 // Enriquecer y limpiar solo los campos necesarios para el catálogo público
-                const enhancedApp = enhanceAppMetadata(meta);
+                const enhancedApp = await enhanceAppMetadata(meta);
                 
-                // Incluir toda la metadata para la carga por AppID, pero en la lista completa
-                // es mejor mantener la limpieza con enhancedApp para reducir el tamaño del JSON.
                 return enhancedApp;
 
              } catch (e) {
@@ -160,12 +161,13 @@ async function rebuildCatalogFile() {
         // 4. Escribir el nuevo archivo apps_data.json
         const catalogData = {
             ok: true,
+            apps: allApps, // El formato del usuario era directamente la lista de apps
             count: allApps.length,
-            apps: allApps,
             timestamp: new Date().toISOString(),
             message: `Catálogo reconstruido desde Git Tree de la rama '${branchName}'.`
         };
 
+        // 💡 CLAVE: Escribir el archivo localmente para que /api/public/apps/all lo lea rápidamente
         fs.writeFileSync(CATALOG_FILE, JSON.stringify(catalogData, null, 2), 'utf8');
         
         // 5. Actualizar la caché en memoria
@@ -191,6 +193,7 @@ function getCatalogData() {
     }
 
     try {
+        // 💡 CLAVE: Leer el archivo local
         const data = fs.readFileSync(CATALOG_FILE, 'utf8');
         const catalogData = JSON.parse(data);
         
@@ -202,6 +205,11 @@ function getCatalogData() {
     } catch (e) {
         // El archivo no existe o no se puede leer (ej. primer arranque)
         console.warn(`Catálogo apps_data.json no encontrado o inaccesible: ${e.message}`);
+        // Intentar reconstruir el catálogo si el archivo no existe
+        if (e.code === 'ENOENT') {
+             // Llamada asíncrona pero sin esperar, para no bloquear el inicio
+             rebuildCatalogFile().catch(err => console.error("Error en reconstrucción de emergencia:", err.message));
+        }
         return { ok: true, count: 0, apps: [], message: "Catálogo vacío. Intente una reconstrucción manual o una subida/aprobación." };
     }
 }
@@ -258,7 +266,10 @@ async function enhanceAppMetadata(meta) {
  * Función para obtener el contenido de un archivo meta.json específico.
  */
 async function getAppMetadataFromGithub(appId, isPending) {
-    const contentPath = `${isPending ? PENDING_PATH : CATALOG_PATH}/${appId}/meta.json`;
+    // 💡 CORRECCIÓN: Asegurar que la ruta base use la ruta correcta.
+    const basePath = isPending ? PENDING_PATH : CATALOG_PATH;
+    const contentPath = `${basePath}/${appId}/meta.json`;
+    
     try {
         const fileData = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: contentPath });
         const meta = JSON.parse(Buffer.from(fileData.data.content, "base64").toString("utf8"));
@@ -419,8 +430,9 @@ async function uploadImageToGithub(base64DataOrUrl, appId, filename, isPending =
     if (extension && !finalFilename.endsWith(`.${extension}`)) {
         finalFilename = finalFilename.replace(/\.png|\.jpg|\.jpeg|\.webp|\.gif/i, '') + `.${extension}`;
     }
-
-    const contentPath = `${isPending ? PENDING_PATH : CATALOG_PATH}/${appId}/${finalFilename}`;
+    
+    const basePath = isPending ? PENDING_PATH : CATALOG_PATH;
+    const contentPath = `${basePath}/${appId}/${finalFilename}`;
     const commitMessage = `Add ${finalFilename} for ${appId} - by ${appId}`;
     
     try {
@@ -456,7 +468,8 @@ async function uploadImageToGithub(base64DataOrUrl, appId, filename, isPending =
  * 💡 NUEVA FUNCIÓN: Elimina un archivo de GitHub.
  */
 async function deleteFileFromGithub(appId, filename, isPending = true) {
-    const contentPath = `${isPending ? PENDING_PATH : CATALOG_PATH}/${appId}/${filename}`;
+    const basePath = isPending ? PENDING_PATH : CATALOG_PATH;
+    const contentPath = `${basePath}/${appId}/${filename}`;
     const commitMessage = `Remove ${filename} for ${appId}`;
     
     try {
@@ -483,10 +496,12 @@ async function deleteFileFromGithub(appId, filename, isPending = true) {
 
 /**
  * Crea o actualiza un archivo JSON en GitHub.
+ * 💡 MEJORA: Permite especificar la ruta base (PENDING o CATALOG)
  */
 async function saveMetadataToGithub(appId, metadata, isPending, commitMessage) {
     const jsonContent = JSON.stringify(metadata, null, 2);
-    const contentPath = `${isPending ? PENDING_PATH : CATALOG_PATH}/${appId}/meta.json`;
+    const basePath = isPending ? PENDING_PATH : CATALOG_PATH;
+    const contentPath = `${basePath}/${appId}/meta.json`;
     const contentBase64 = Buffer.from(jsonContent).toString('base64');
     
     let sha = undefined;
@@ -509,6 +524,44 @@ async function saveMetadataToGithub(appId, metadata, isPending, commitMessage) {
     });
     
     return response.data.commit;
+}
+
+/**
+ * 💡 NUEVA FUNCIÓN: Elimina una carpeta completa (junto con el meta.json) en GitHub.
+ * Esto es necesario después de aprobar o rechazar una app pendiente.
+ */
+async function deleteAppFolderFromGithub(appId, isPending) {
+    const basePath = isPending ? PENDING_PATH : CATALOG_PATH;
+    const appPath = `${basePath}/${appId}`;
+    const commitMessage = `Remove folder: ${appPath}`;
+    
+    try {
+        // 1. Obtener todos los archivos en esa carpeta para borrarlos uno por uno.
+        const treeResponse = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: appPath });
+        const filesToDelete = Array.isArray(treeResponse.data) ? treeResponse.data : [treeResponse.data];
+
+        for (const file of filesToDelete) {
+             // Solo eliminar archivos, no subcarpetas.
+             if (file.type === 'file') {
+                 console.log(`- Eliminando archivo: ${file.path}`);
+                 await octokit.repos.deleteFile({
+                    owner: G_OWNER,
+                    repo: G_REPO,
+                    path: file.path,
+                    message: `Cleanup: Remove ${file.name} for ${appId}`,
+                    sha: file.sha, 
+                });
+             }
+        }
+        return true;
+        
+    } catch (e) {
+        // Ignorar 404 (carpeta no existe)
+        if (e.status !== 404) {
+            console.error(`Error al eliminar la carpeta ${appPath} de GitHub:`, e.message);
+        }
+        return false;
+    }
 }
 
 
@@ -1320,7 +1373,6 @@ app.get("/api/admin/pending", async (req, res) => {
 /**
  * 🚀 FUNCIÓN 5: Aprobar o Rechazar una aplicación
  * POST /api/admin/review
- * 🚨 MODIFICADO: Se ELIMINA el middleware de autenticación de administrador (`authenticateAdmin`).
  */
 app.post("/api/admin/review", async (req, res) => {
     const { appId, action, reason } = req.body;
@@ -1334,19 +1386,23 @@ app.post("/api/admin/review", async (req, res) => {
     const pendingFilePath = `${PENDING_PATH}/${appId}/meta.json`;
 
     try {
+        // 1. Obtener la metadata PENDIENTE
         const fileData = await octokit.repos.getContent({ 
             owner: G_OWNER, 
             repo: G_REPO, 
             path: pendingFilePath 
         });
         const meta = JSON.parse(Buffer.from(fileData.data.content, "base64").toString("utf8"));
-
+        
+        // 💡 CLAVE: Obtener el SHA de la carpeta para la eliminación (si se necesita)
+        const pendingFolderContents = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: `${PENDING_PATH}/${appId}` });
+        
         if (action === 'approve') {
             meta.status = "approved";
             meta.isPublic = true;
             meta.approvedDate = new Date().toISOString();
             
-            // 1. Guardar el meta.json APROBADO en la carpeta CATALOG_PATH
+            // 2. Guardar el meta.json APROBADO en la carpeta CATALOG_PATH
             const commitApprove = await saveMetadataToGithub(
                 appId, 
                 meta, 
@@ -1354,14 +1410,8 @@ app.post("/api/admin/review", async (req, res) => {
                 `Approve: ${meta.title} (${appId}). Now public.`
             );
 
-            // 2. Eliminar el meta.json PENDIENTE
-            await octokit.repos.deleteFile({
-                owner: G_OWNER,
-                repo: G_REPO,
-                path: pendingFilePath,
-                message: `Cleanup: Remove pending meta for ${appId}`,
-                sha: fileData.data.sha 
-            });
+            // 3. Eliminar la carpeta PENDIENTE completa
+            await deleteAppFolderFromGithub(appId, true);
             
             // 🛑 PASO CLAVE: Reconstruir el catálogo para que la app esté disponible al instante
             await rebuildCatalogFile();
@@ -1378,23 +1428,17 @@ app.post("/api/admin/review", async (req, res) => {
             meta.reason = reason;
             meta.rejectedDate = new Date().toISOString();
             
-            // 1. Guardar la razón de rechazo en el mismo meta.json y MOVERLO a CATALOG_PATH (marcado como NO público)
+            // 1. Guardar la razón de rechazo en el meta.json, marcar como NO público y MOVERLO a CATALOG_PATH (para referencia del desarrollador)
              meta.isPublic = false;
              await saveMetadataToGithub(
                 appId, 
                 meta, 
-                false, // isPending = false (Mover a CATALOG_PATH)
+                false, // isPending = false (Mover a CATALOG_PATH - para historial)
                 `Reject: ${meta.title} (${appId}). Reason: ${reason}. Moved to catalog (private).`
             );
             
-            // 2. Borrar de 'pending'
-             await octokit.repos.deleteFile({
-                owner: G_OWNER,
-                repo: G_REPO,
-                path: pendingFilePath,
-                message: `Cleanup: Remove pending meta for rejected ${appId}`,
-                sha: fileData.data.sha 
-            });
+            // 2. Eliminar la carpeta PENDIENTE
+             await deleteAppFolderFromGithub(appId, true);
 
             res.json({
                 ok: true,
@@ -1421,7 +1465,7 @@ app.post("/api/admin/review", async (req, res) => {
  * GET /api/public/apps/all
  */
 app.get("/api/public/apps/all", (req, res) => {
-    // 💡 Usa la función para obtener el catálogo cacheado
+    // 💡 Usa la función para obtener el catálogo cacheado del archivo apps_data.json
     const catalog = getCatalogData();
     res.json(catalog);
 });
@@ -1545,6 +1589,7 @@ const handleLikeAction = async (appId, action, userId) => {
     
     // Llamar a la reconstrucción del catálogo para reflejar la nueva puntuación
     // Se recomienda una reconstrucción periódica. Aquí se mantiene la llamada por completitud.
+    // Aunque es un poco ineficiente, asegura la consistencia.
     rebuildCatalogFile(); 
     
     return result;
