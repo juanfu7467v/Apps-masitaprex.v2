@@ -1124,12 +1124,10 @@ app.get("/api/dev/apps", authenticateDeveloper, async (req, res) => {
    ENDPOINTS DE PANEL DE ADMINISTRACIÓN
 -------------------------------------------------------------------------------------*/
 
-// ... (Otros endpoints de Admin se mantienen igual) ...
-
 /**
  * 🚀 FUNCIÓN 5: Aprobar o Rechazar una aplicación
  * POST /api/admin/review
- * **MEJORA:** Llama a rebuildCatalogFile() al aprobar.
+ * 🚨 MODIFICADO: Se ELIMINA el middleware de autenticación de administrador (`authenticateAdmin`).
  */
 app.post("/api/admin/review", async (req, res) => {
     const { appId, action, reason } = req.body;
@@ -1138,7 +1136,7 @@ app.post("/api/admin/review", async (req, res) => {
          return res.status(400).json({ ok: false, error: "Faltan campos obligatorios: appId, action, y reason (si se rechaza)." });
     }
     
-    // Aquí se debería validar si el usuario es Admin (omitiendo por simplicidad)
+    // NOTA DE SEGURIDAD: Aquí se debería validar si el usuario es Admin, pero se ha omitido a petición del usuario.
     
     const pendingFilePath = `${PENDING_PATH}/${appId}/meta.json`;
 
