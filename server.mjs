@@ -945,7 +945,7 @@ app.post("/api/dev/apps/submit/playstore", authenticateDeveloper, async (req, re
         const screenshotUrls = playStoreMeta.screenshots || [];
 
         const metadata = {
-            appId: playStoreMeta.appId,
+            appId: playStoreId,
             title: playStoreMeta.title,
             icon: iconUrl,
             summary: playStoreMeta.summary,
@@ -1753,31 +1753,15 @@ app.post("/api/public/apps/:appId/:action(like|dislike|remove)", async (req, res
    ENDPOINTS: API DE CONSULTAS
 -------------------------------------------------------------------------------------*/
 
-// 🔹 API v1 (Nueva) - Se mantienen igual
-app.get("/api/dni", authenticateDeveloper, async (req, res) => {
-  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/dni?dni=${req.query.dni}`, 5);
-});
-app.get("/api/ruc", authenticateDeveloper, async (req, res) => {
-  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/ruc?ruc=${req.query.ruc}`, 5);
-});
-app.get("/api/ruc-anexo", authenticateDeveloper, async (req, res) => {
-  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/ruc-anexo?ruc=${req.query.ruc}`, 5);
-});
-app.get("/api/ruc-representante", authenticateDeveloper, async (req, res) => {
-  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/ruc-representante?ruc=${req.query.ruc}`, 5);
-});
-app.get("/api/ruc-comercio", authenticateDeveloper, async (req, res) => {
-  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/ruc-comercio?ruc=${req.query.ruc}`, 5);
-});
-app.get("/api/dni-similitud", authenticateDeveloper, async (req, res) => {
-  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/dni-similitud?nombre=${req.query.nombre}`, 5, transformarRespuestaBusqueda);
-});
-app.get("/api/ruc-similitud", authenticateDeveloper, async (req, res) => {
-  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/ruc-similitud?nombre=${req.query.nombre}`, 5, transformarRespuestaBusqueda);
-});
-app.get("/api/sunarp", authenticateDeveloper, async (req, res) => {
-  await consumirAPI(req, res, `${NEW_API_V1_BASE_URL}/sunarp?placa=${req.query.placa}`, 5);
-});
+// 🛑 Endpoints de Consulta ELIMINADOS según la solicitud:
+// GET | /api/dni?dni={dni}
+// GET | /api/ruc?ruc={ruc}
+// GET | /api/ruc-anexo?ruc={ruc}
+// GET | /api/ruc-representante?ruc={ruc}
+// GET | /api/ruc-comercio?ruc={ruc}
+// GET | /api/dni-similitud?nombre={nombre}
+// GET | /api/ruc-similitud?nombre={nombre}
+// GET | /api/sunarp?placa={placa}
 
 // -------------------- RUTA RAÍZ Y ARRANQUE DEL SERVIDOR --------------------
 
@@ -1805,7 +1789,8 @@ app.get("/", (req, res) => {
         popular: "/api/public/apps/popular",
         details: "/api/public/apps/:appId",
         interaccion: "/api/public/apps/:appId/:action (like|dislike|remove)" 
-    }
+    },
+    "endpoints-consulta": "🚫 Los endpoints de consulta GET /api/dni*, /api/ruc* y /api/sunarp fueron eliminados según la solicitud."
   });
 });
 
