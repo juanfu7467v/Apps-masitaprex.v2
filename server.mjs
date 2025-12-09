@@ -933,6 +933,10 @@ app.post("/api/dev/apps/submit/playstore", authenticateDeveloper, async (req, re
     if (!playStoreId) {
         return res.status(400).json({ ok: false, error: "El campo 'playStoreId' es obligatorio." });
     }
+    // 💡 AÑADIDO: Validación de directDownloadUrl, ya que es la clave para la descarga
+    if (!directDownloadUrl) {
+         return res.status(400).json({ ok: false, error: "El campo 'directDownloadUrl' es obligatorio para la descarga." });
+    }
     
     try {
         // 🛑 CORRECCIÓN APLICADA: Se elimina el parámetro 'country: us'
@@ -1225,9 +1229,19 @@ app.put("/api/dev/apps/:appId/edit", authenticateDeveloper, async (req, res) => 
     // 6. Comprobar si hay cambios en los campos de texto
     const textFields = ['title', 'summary', 'description', 'category', 'operatingSystem', 'language', 'author', 'externalDownloadUrl', 'version', 'apk_size'];
     textFields.forEach(field => {
-        if (updates[field] !== currentMeta[field] && updates[field] !== undefined) {
-            commitMessage += ` ${field} updated.`;
-            changesMade = true;
+        // Solo compara si el campo existe en el body (o se envía null/cadena vacía)
+        if (req.body[field] !== undefined && req.body[field] !== null && req.body[field] !== currentMeta[field]) {
+             // Si el campo enviado está vacío, solo actualizar si no lo estaba antes
+             if (req.body[field].length === 0 && currentMeta[field] === undefined) return;
+             
+             // Si el campo tiene un valor, se actualiza
+             updates[field] = req.body[field];
+             
+             // Si el campo de texto se actualizó, se considera un cambio
+             if (updates[field] !== currentMeta[field]) {
+                 commitMessage += ` ${field} updated.`;
+                 changesMade = true;
+             }
         }
     });
 
@@ -1753,15 +1767,7 @@ app.post("/api/public/apps/:appId/:action(like|dislike|remove)", async (req, res
    ENDPOINTS: API DE CONSULTAS
 -------------------------------------------------------------------------------------*/
 
-// 🛑 Endpoints de Consulta ELIMINADOS según la solicitud:
-// GET | /api/dni?dni={dni}
-// GET | /api/ruc?ruc={ruc}
-// GET | /api/ruc-anexo?ruc={ruc}
-// GET | /api/ruc-representante?ruc={ruc}
-// GET | /api/ruc-comercio?ruc={ruc}
-// GET | /api/dni-similitud?nombre={nombre}
-// GET | /api/ruc-similitud?nombre={nombre}
-// GET | /api/sunarp?placa={placa}
+// 🛑 Endpoints de Consulta ELIMINADOS según la solicitud
 
 // -------------------- RUTA RAÍZ Y ARRANQUE DEL SERVIDOR --------------------
 
