@@ -84,6 +84,9 @@ const PENDING_PATH = "public/apps_pending";
 const CATALOG_PATH = "public/apps";
 // 💡 CLAVE: Ruta del archivo JSON centralizado que será leído por el catálogo público
 const CATALOG_FILE = path.join(process.cwd(), 'public', 'apps_data.json'); 
+// 💡 NUEVA RUTA SOLICITADA: Para almacenar las apps pendientes en un solo JSON (aunque el enfoque por carpeta es mejor, se añade por requerimiento)
+const PENDING_FILE = path.join(process.cwd(), 'public', '.gitkeep', 'apps_en_revision_data.json');
+
 
 // Cache en Memoria para el catálogo
 let appsCatalogCache = {
@@ -97,6 +100,79 @@ let appsCatalogCache = {
 /* ----------------------------------------------------------------------------------
    FUNCIONES DE UTILIDAD Y CATALOGACIÓN (CATALIZADORES DE VELOCIDAD)
 -------------------------------------------------------------------------------------*/
+
+/**
+ * Reconstruye el archivo PENDING_FILE (apps_en_revision_data.json)
+ * solicitado por el usuario.
+ * @returns {Promise<Object>}
+ */
+async function rebuildPendingFile() {
+    console.log("🛠️ Iniciando reconstrucción del archivo pendiente...");
+    try {
+        // 1. Obtener el árbol de contenido de forma recursiva
+        const treeResponse = await octokit.git.getTree({
+            owner: G_OWNER,
+            repo: G_REPO,
+            tree_sha: 'HEAD',
+            recursive: 'true',
+        });
+
+        // 2. Filtrar los archivos meta.json en la ruta PENDING
+        const pendingMetaFiles = treeResponse.data.tree.filter(item => 
+            item.path.startsWith(PENDING_PATH + '/') && item.path.endsWith('/meta.json') && item.type === 'blob'
+        );
+
+        const allPendingApps = {}; // Objeto para ordenar por token comp (submittedBy)
+        
+        for (const file of pendingMetaFiles) {
+            try {
+                // Descargar el contenido del blob
+                const blobResponse = await octokit.git.getBlob({
+                    owner: G_OWNER,
+                    repo: G_REPO,
+                    file_sha: file.sha,
+                });
+                
+                const meta = JSON.parse(Buffer.from(blobResponse.data.content, "base64").toString("utf8"));
+                const submittedBy = meta.submittedBy || 'unknown_developer';
+                
+                if (!allPendingApps[submittedBy]) {
+                    allPendingApps[submittedBy] = [];
+                }
+                // Añadir la app al array del desarrollador
+                allPendingApps[submittedBy].push(meta); 
+
+             } catch (e) {
+                 console.warn(`No se pudo cargar meta.json pendiente en ${file.path}: ${e.message}`);
+             }
+        }
+        
+        // 3. Escribir el nuevo archivo apps_en_revision_data.json
+        const pendingData = {
+            ok: true,
+            pending_apps_by_developer: allPendingApps, 
+            count: pendingMetaFiles.length,
+            timestamp: new Date().toISOString(),
+            message: `Datos pendientes reconstruidos desde Git Tree.`
+        };
+
+        // Asegurar que la carpeta exista antes de escribir
+        const dir = path.dirname(PENDING_FILE);
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+        
+        fs.writeFileSync(PENDING_FILE, JSON.stringify(pendingData, null, 2), 'utf8');
+        
+        console.log(`✅ Archivo apps_en_revision_data.json reconstruido con ${pendingMetaFiles.length} apps.`);
+        return pendingData;
+
+    } catch (e) {
+        console.error("🚫 Error al reconstruir el archivo pendiente:", e.message);
+        return { ok: false, error: e.message };
+    }
+}
+
 
 /**
  * Función central para reconstruir el archivo apps_data.json.
@@ -214,8 +290,9 @@ function getCatalogData() {
     }
 }
 
-// Llama a la reconstrucción del catálogo al inicio para tenerlo listo
+// Llama a la reconstrucción del catálogo y del archivo pendiente al inicio para tenerlos listos
 rebuildCatalogFile();
+rebuildPendingFile(); // 💡 CORRECCIÓN: Inicializa el archivo solicitado
 
 
 /**
@@ -258,7 +335,9 @@ async function enhanceAppMetadata(meta) {
         status: meta.status || (meta.isPublic === true ? 'approved' : 'pending_review'),
         // Añadir el ID del desarrollador para el filtro en el panel
         submittedBy: meta.submittedBy || 'Desconocido', 
-        developerName: meta.developerName || 'Desconocido'
+        developerName: meta.developerName || 'Desconocido',
+        externalDownloadUrl: meta.externalDownloadUrl || 'N/A',
+        isPublic: meta.isPublic,
     };
 }
 
@@ -427,8 +506,13 @@ async function uploadImageToGithub(base64DataOrUrl, appId, filename, isPending =
 
     // 💡 CORRECCIÓN: Usar la extensión correcta
     let finalFilename = filename;
-    if (extension && !finalFilename.endsWith(`.${extension}`)) {
-        finalFilename = finalFilename.replace(/\.png|\.jpg|\.jpeg|\.webp|\.gif/i, '') + `.${extension}`;
+    // Intentar extraer la extensión real del Base64
+    if (mimeType.includes('/')) {
+        const actualExtension = mimeType.split('/')[1].replace('+xml', '');
+        // Reemplazar la extensión genérica si es necesario
+        if (!finalFilename.includes(`.${actualExtension}`)) {
+             finalFilename = finalFilename.replace(/\.png|\.jpg|\.jpeg|\.webp|\.gif/i, '') + `.${actualExtension}`;
+        }
     }
     
     const basePath = isPending ? PENDING_PATH : CATALOG_PATH;
@@ -533,37 +617,38 @@ async function saveMetadataToGithub(appId, metadata, isPending, commitMessage) {
 async function deleteAppFolderFromGithub(appId, isPending) {
     const basePath = isPending ? PENDING_PATH : CATALOG_PATH;
     const appPath = `${basePath}/${appId}`;
-    const commitMessage = `Remove folder: ${appPath}`;
     
     try {
         // 1. Obtener todos los archivos en esa carpeta para borrarlos uno por uno.
         const treeResponse = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: appPath });
+        // Asegurar que sea un array si solo hay un archivo
         const filesToDelete = Array.isArray(treeResponse.data) ? treeResponse.data : [treeResponse.data];
 
         for (const file of filesToDelete) {
              // Solo eliminar archivos, no subcarpetas.
              if (file.type === 'file') {
                  console.log(`- Eliminando archivo: ${file.path}`);
+                 // Hay que obtener el SHA de nuevo si el tree es recursivo, 
+                 // pero getContent ya da el SHA correcto si no es recursivo.
                  await octokit.repos.deleteFile({
                     owner: G_OWNER,
                     repo: G_REPO,
                     path: file.path,
                     message: `Cleanup: Remove ${file.name} for ${appId}`,
-                    sha: file.sha, 
+                    sha: file.sha, // Usar el SHA del file individual
                 });
              }
         }
         return true;
         
     } catch (e) {
-        // Ignorar 404 (carpeta no existe)
+        // Ignorar 404 (carpeta no existe o ya está vacía)
         if (e.status !== 404) {
             console.error(`Error al eliminar la carpeta ${appPath} de GitHub:`, e.message);
         }
         return false;
     }
 }
-
 
 /**
  * Función genérica para consumir API, procesar la respuesta y guardar el LOG EXTERNO.
@@ -876,7 +961,7 @@ app.post("/api/dev/apps/submit/playstore", authenticateDeveloper, async (req, re
             // 💡 ESTADO DE LA APLICACIÓN
             status: "pending_review", 
             submittedBy: req.developer.userId, 
-            developerName: req.developer.developerName || req.developer.email,
+            developerName: req.developer.developerName || playStoreMeta.developer,
             submissionDate: new Date().toISOString(),
             source: "playstore_scraped",
             // Campos adicionales para la reconstrucción del catálogo
@@ -900,6 +985,9 @@ app.post("/api/dev/apps/submit/playstore", authenticateDeveloper, async (req, re
             `Play Store Submission: ${playStoreMeta.title} (${playStoreId})`
         );
         
+        // 💡 CLAVE: Reconstruir el archivo pendiente
+        await rebuildPendingFile();
+
         res.json({
             ok: true,
             message: "✅ Aplicación enviada a revisión con datos de Play Store.",
@@ -933,20 +1021,19 @@ app.post("/api/dev/apps/submit/playstore", authenticateDeveloper, async (req, re
 app.post("/api/dev/apps/submit/manual", authenticateDeveloper, async (req, res) => {
     const { 
         appName, packageName, directDownloadUrl, 
-        iconBase64, category, website, country, 
+        iconBase64, classification, website, language, 
         briefDescription, fullDescription, 
-        screenshotsBase64 = [], featuredImageBase64, 
-        youtubeUrl, // 💡 NUEVO
-        operatingSystem, // 💡 NUEVO
-        author, // 💡 NUEVO
-        version = '1.0.0', apk_size = 0 
+        screenshotsBase64 = [], 
+        operatingSystem, 
+        author, 
+        version = '1.0.0', apk_size = 0, youtubeUrl
     } = req.body;
     
     // --- Validación básica de campos obligatorios ---
-    if (!appName || !packageName || !directDownloadUrl || !iconBase64 || !briefDescription) {
+    if (!appName || !packageName || !directDownloadUrl || !iconBase64 || !briefDescription || !classification || !operatingSystem || !language) {
         return res.status(400).json({ 
             ok: false, 
-            error: "Faltan campos obligatorios: appName, packageName, directDownloadUrl, iconBase64/Url, briefDescription." 
+            error: "Faltan campos obligatorios: Nombre de la app, Package ID, URL de descarga, URL/Base64 del Ícono, Descripción breve, Clasificación, Sistema Operativo e Idioma." 
         });
     }
 
@@ -955,7 +1042,6 @@ app.post("/api/dev/apps/submit/manual", authenticateDeveloper, async (req, res) 
     try {
         // 1. Subida de archivos (Base64 O URL directa) a GitHub
         const iconUrl = await uploadImageToGithub(iconBase64, appId, "icon.png", true);
-        const featuredImageUrl = await uploadImageToGithub(featuredImageBase64, appId, "featured.png", true);
         
         const screenshotUrls = [];
         // 💡 CORRECCIÓN: Limitar a 8 capturas de pantalla, y aceptar Base64 O URL
@@ -970,18 +1056,17 @@ app.post("/api/dev/apps/submit/manual", authenticateDeveloper, async (req, res) 
             appId: appId,
             title: appName,
             icon: iconUrl,
-            category: category,
+            category: classification, // Usado como clasificación/categoría
             summary: briefDescription,
             description: fullDescription,
             developer: req.developer.developerName || req.developer.email,
             developerWebsite: website,
-            country: country,
+            language: language,
             externalDownloadUrl: directDownloadUrl,
             screenshots: screenshotUrls,
-            featuredImage: featuredImageUrl,
-            video: youtubeUrl, // 💡 NUEVO
-            operatingSystem: operatingSystem || 'Desconocido', // 💡 NUEVO
-            author: author || req.developer.developerName || 'Desarrollador No Especificado', // 💡 NUEVO
+            video: youtubeUrl, 
+            operatingSystem: operatingSystem, 
+            author: author || req.developer.developerName || 'Desarrollador No Especificado', 
             // 💡 ESTADO DE LA APLICACIÓN
             status: "pending_review", 
             submittedBy: req.developer.userId, 
@@ -1006,6 +1091,9 @@ app.post("/api/dev/apps/submit/manual", authenticateDeveloper, async (req, res) 
             `Manual Submission: ${appName} (${appId})`
         );
         
+        // 💡 CLAVE: Reconstruir el archivo pendiente
+        await rebuildPendingFile();
+
         res.json({
             ok: true,
             message: "✅ Aplicación enviada a revisión con datos manuales. Se almacenó el archivo `meta.json` y los archivos multimedia en GitHub.",
@@ -1028,14 +1116,18 @@ app.post("/api/dev/apps/submit/manual", authenticateDeveloper, async (req, res) 
 /**
  * 💡 NUEVO ENDPOINT: Eliminar/Reemplazar Icono, Capturas, Imagen Destacada o Video.
  * PUT /api/dev/apps/:appId/media
+ * 💡 MEJORA: Unificado con la edición de información básica
+ * PUT /api/dev/apps/:appId/edit
  */
-app.put("/api/dev/apps/:appId/media", authenticateDeveloper, async (req, res) => {
+app.put("/api/dev/apps/:appId/edit", authenticateDeveloper, async (req, res) => {
     const { appId } = req.params;
     const { 
         iconBase64, // Puede ser Base64 o URL
-        featuredImageBase64, // Puede ser Base64 o URL
         screenshotsBase64 = null, // null = no cambiar, [] = borrar todas, [base64, ...] = reemplazar
-        youtubeUrl 
+        youtubeUrl, 
+        // Campos de texto para edición de información básica
+        appName, briefDescription, fullDescription, classification, 
+        operatingSystem, language, author, directDownloadUrl, version, apk_size 
     } = req.body;
     
     // 1. Determinar si la app está en PENDING o CATALOG
@@ -1064,113 +1156,114 @@ app.put("/api/dev/apps/:appId/media", authenticateDeveloper, async (req, res) =>
 
     let updates = {
         icon: currentMeta.icon,
-        featuredImage: currentMeta.featuredImage,
         screenshots: currentMeta.screenshots || [],
         video: currentMeta.video,
         updatedAt: new Date().getTime(),
+        // Campos de texto: Solo se actualiza si se envía el valor
+        title: appName || currentMeta.title,
+        summary: briefDescription || currentMeta.summary,
+        description: fullDescription || currentMeta.description,
+        category: classification || currentMeta.category,
+        operatingSystem: operatingSystem || currentMeta.operatingSystem,
+        language: language || currentMeta.language,
+        author: author || currentMeta.author,
+        externalDownloadUrl: directDownloadUrl || currentMeta.externalDownloadUrl,
+        version: version || currentMeta.version,
+        apk_size: apk_size || currentMeta.apk_size,
     };
-    let commitMessage = `Update media for ${appId}:`;
+    
+    let commitMessage = `Update for ${appId}:`;
     let changesMade = false;
+    
+    // Si la app está APROBADA y el cambio es de versión/APK/descarga, se requiere nueva revisión
+    if (!isPending && (version || directDownloadUrl)) {
+         updates.status = "pending_update_review";
+         commitMessage += " Version update submitted for review.";
+         changesMade = true;
+    }
+
+    // --- 3. Actualizar ICONO ---
+    if (iconBase64 !== undefined && iconBase64 !== null) {
+        if (iconBase64.length > 0) {
+            updates.icon = await uploadImageToGithub(iconBase64, appId, "icon.png", isPending);
+            commitMessage += " Icon replaced.";
+        } else {
+            if (updates.icon && !updates.icon.startsWith('http')) {
+                await deleteFileFromGithub(appId, "icon.png", isPending);
+            }
+            updates.icon = null;
+            commitMessage += " Icon removed.";
+        }
+        changesMade = true;
+    }
+
+    // --- 4. Actualizar URL de VIDEO (YouTube) ---
+    if (youtubeUrl !== undefined && youtubeUrl !== null && youtubeUrl !== currentMeta.video) {
+        updates.video = (youtubeUrl.length > 0) ? youtubeUrl : null;
+        commitMessage += updates.video ? " Video URL updated." : " Video URL removed.";
+        changesMade = true;
+    }
+    
+    // --- 5. Actualizar CAPTURAS DE PANTALLA ---
+    if (screenshotsBase64 !== null) {
+        // Borrar archivos antiguos
+        for (let i = 1; i <= 8; i++) {
+            await deleteFileFromGithub(appId, `screenshot_${i}.png`, isPending);
+        }
+        
+        updates.screenshots = [];
+        // Subir las nuevas capturas. 💡 CORRECCIÓN: Aplicar límite de 8 aquí también.
+        for (let i = 0; i < Math.min(screenshotsBase64.length, 8); i++) {
+            const ssUrl = await uploadImageToGithub(screenshotsBase64[i], appId, `screenshot_${i + 1}.png`, isPending);
+            if (ssUrl) updates.screenshots.push(ssUrl);
+        }
+
+        commitMessage += updates.screenshots.length > 0 ? ` Screenshots replaced (${updates.screenshots.length} new).` : " Screenshots removed.";
+        changesMade = true;
+    }
+    
+    // 6. Comprobar si hay cambios en los campos de texto
+    const textFields = ['title', 'summary', 'description', 'category', 'operatingSystem', 'language', 'author', 'externalDownloadUrl', 'version', 'apk_size'];
+    textFields.forEach(field => {
+        if (updates[field] !== currentMeta[field] && updates[field] !== undefined) {
+            commitMessage += ` ${field} updated.`;
+            changesMade = true;
+        }
+    });
+
+
+    if (!changesMade) {
+        return res.status(200).json({ ok: true, message: "No se proporcionaron cambios para aplicar. Metadata sin modificar." });
+    }
+
+    // 7. Guardar la nueva metadata
+    const newMeta = { ...currentMeta, ...updates };
+
+    const commit = await saveMetadataToGithub(
+        appId, 
+        newMeta, 
+        isPending, // Se guarda en la misma ruta, si es un cambio de versión se requerirá movimiento manual
+        commitMessage
+    );
+    
+    // 8. Reconstruir el catálogo y archivo pendiente si es necesario
+    if (!isPending) {
+         await rebuildCatalogFile();
+    }
+    // Si la app está pendiente, la metadata ya se actualizó en PENDING_PATH, actualizamos el archivo JSON
+    if (isPending || newMeta.status === "pending_update_review") {
+         await rebuildPendingFile();
+    }
+    
+    res.json({
+        ok: true,
+        message: `✅ Aplicación actualizada exitosamente. Estado actual: ${newMeta.status}.`,
+        appId: appId,
+        commitUrl: commit.html_url,
+        newMetadata: newMeta
+    });
 
     try {
-        // --- 3. Actualizar ICONO ---
-        if (iconBase64 !== undefined && iconBase64 !== null) {
-            if (iconBase64.length > 0) {
-                // Sube el archivo si es Base64 o devuelve la URL si lo es
-                updates.icon = await uploadImageToGithub(iconBase64, appId, "icon.png", isPending);
-                commitMessage += " Icon replaced.";
-                changesMade = true;
-            } else {
-                // Eliminar ícono (Solo si NO es una URL externa - Play Store)
-                if (updates.icon && !updates.icon.startsWith('http')) {
-                    await deleteFileFromGithub(appId, "icon.png", isPending);
-                }
-                updates.icon = null;
-                commitMessage += " Icon removed.";
-                changesMade = true;
-            }
-        }
-        
-        // --- 4. Actualizar IMAGEN DESTACADA ---
-        if (featuredImageBase64 !== undefined && featuredImageBase64 !== null) {
-            if (featuredImageBase64.length > 0) {
-                updates.featuredImage = await uploadImageToGithub(featuredImageBase64, appId, "featured.png", isPending);
-                commitMessage += " Featured replaced.";
-                changesMade = true;
-            } else {
-                // Eliminar imagen destacada (Solo si NO es una URL externa - Play Store)
-                if (updates.featuredImage && !updates.featuredImage.startsWith('http')) {
-                    await deleteFileFromGithub(appId, "featured.png", isPending);
-                }
-                updates.featuredImage = null;
-                commitMessage += " Featured removed.";
-                changesMade = true;
-            }
-        }
-
-        // --- 5. Actualizar URL de VIDEO (YouTube) ---
-        if (youtubeUrl !== undefined && youtubeUrl !== null) {
-            updates.video = (youtubeUrl.length > 0) ? youtubeUrl : null;
-            commitMessage += updates.video ? " Video URL updated." : " Video URL removed.";
-            changesMade = true;
-        }
-        
-        // --- 6. Actualizar CAPTURAS DE PANTALLA ---
-        if (screenshotsBase64 !== null) {
-            // Borrar capturas antiguas que se subieron manualmente
-            // Las URLs de Play Store se mantienen a menos que se reemplace la lista entera.
-            
-            // Se elimina cualquier archivo con el patrón 'screenshot_N.png'
-            for (let i = 1; i <= 8; i++) {
-                // Intentar borrar las que tengan el nombre estándar de la subida manual
-                await deleteFileFromGithub(appId, `screenshot_${i}.png`, isPending);
-            }
-            
-            updates.screenshots = [];
-            // Subir las nuevas capturas. 💡 CORRECCIÓN: Aplicar límite de 8 aquí también.
-            for (let i = 0; i < Math.min(screenshotsBase64.length, 8); i++) {
-                // Se acepta Base64 o URL. Si es URL, solo se añade al array.
-                const ssUrl = await uploadImageToGithub(screenshotsBase64[i], appId, `screenshot_${i + 1}.png`, isPending);
-                if (ssUrl) updates.screenshots.push(ssUrl);
-            }
-
-            commitMessage += updates.screenshots.length > 0 ? ` Screenshots replaced (${updates.screenshots.length} new).` : " Screenshots removed.";
-            changesMade = true;
-        }
-
-
-        if (!changesMade) {
-            return res.status(200).json({ ok: true, message: "No se proporcionaron cambios para aplicar. Metadata sin modificar." });
-        }
-
-        // 7. Guardar la nueva metadata
-        const newMeta = { ...currentMeta, ...updates };
-
-        const commit = await saveMetadataToGithub(
-            appId, 
-            newMeta, 
-            isPending, 
-            commitMessage
-        );
-        
-        // 8. Reconstruir el catálogo si la app está APROBADA
-        if (!isPending) {
-             await rebuildCatalogFile();
-        }
-        
-        res.json({
-            ok: true,
-            message: `✅ Archivos multimedia actualizados exitosamente. Aplicación ${isPending ? 'en revisión' : 'aprobada'}.`,
-            appId: appId,
-            commitUrl: commit.html_url,
-            newMetadata: {
-                icon: newMeta.icon,
-                featuredImage: newMeta.featuredImage,
-                screenshots: newMeta.screenshots,
-                video: newMeta.video
-            }
-        });
-
     } catch (e) {
         console.error("Error al actualizar media:", e.message);
         // Devolver un error 413 si es un problema de payload muy grande
@@ -1181,7 +1274,6 @@ app.put("/api/dev/apps/:appId/media", authenticateDeveloper, async (req, res) =>
         });
     }
 });
-
 
 /**
  * 🚀 FUNCIÓN 3: Panel de Versiones, Me Gusta y Estadísticas
@@ -1194,98 +1286,147 @@ app.get("/api/dev/apps", authenticateDeveloper, async (req, res) => {
     try {
         let allDeveloperApps = [];
         
-        // 1. Obtener todas las apps APROBADAS del catálogo (ya pre-filtradas y enriquecidas)
-        const appsData = getCatalogData();
-        // Filtrar por submittedBy (userId de Firestore) O por developerName (fallback/compatibilidad)
-        const approvedApps = appsData.apps.filter(app => 
-            app.submittedBy === developerUserId
-        );
+        // 1. Obtener todas las apps APROBADAS y PENDIENTES/RECHAZADAS del catálogo (ruta CATALOG_PATH)
+        // Obtener el árbol de la carpeta CATALOG_PATH y PENDING_PATH (juntos)
+        let allMetaFiles = [];
+        const pathsToSearch = [CATALOG_PATH, PENDING_PATH];
 
-        for (const app of approvedApps) {
-            const stats = await getAppStatistics(app.appId);
-            allDeveloperApps.push({
-                appId: app.appId,
-                title: app.name,
-                icon: app.icon,
-                status: "Approved",
-                versions: [{ 
-                    version: app.version || '1.0.0', 
-                    status: "Published", 
-                    date: app.updatedAt
-                }],
-                stats: stats,
-                likes: stats.likes,
-                dislikes: stats.dislikes,
-                message: `Reporte: ${stats.likes} Me Gusta, ${stats.dislikes} No Me Gusta, con una puntuación media de ${stats.score}.`,
-                submissionDate: app.submissionDate,
-                source: app.source
-            });
+        for (const basePath of pathsToSearch) {
+             let treeResponse;
+             try {
+                treeResponse = await octokit.git.getTree({
+                    owner: G_OWNER,
+                    repo: G_REPO,
+                    tree_sha: 'HEAD', // Obtener el árbol más reciente
+                    recursive: 'true',
+                });
+             } catch (e) {
+                 console.warn(`Error al obtener árbol de GitHub para ${basePath}: ${e.message}`);
+                 continue;
+             }
+             
+             const metaFiles = treeResponse.data.tree.filter(item => 
+                 item.path.startsWith(basePath + '/') && item.path.endsWith('/meta.json') && item.type === 'blob'
+             );
+             allMetaFiles.push(...metaFiles);
         }
-        
-        // 2. Obtener todas las apps PENDIENTES de GitHub
-        // Obtener el árbol de la carpeta PENDING_PATH
-        let pendingTreeResponse;
-        try {
-             pendingTreeResponse = await octokit.git.getTree({
-                owner: G_OWNER,
-                repo: G_REPO,
-                tree_sha: 'HEAD',
-                recursive: 'true',
-            });
-        } catch (e) {
-            // Si la rama no tiene contenido, se ignora
-            console.warn("No se pudo obtener el árbol de GitHub, asumiendo vacío o error de rama:", e.message);
-            pendingTreeResponse = { data: { tree: [] } };
-        }
-        
-        const pendingMetaFiles = pendingTreeResponse.data.tree.filter(item => 
-            item.path.startsWith(PENDING_PATH + '/') && item.path.endsWith('/meta.json') && item.type === 'blob'
-        );
 
-        const pendingAppsPromises = pendingMetaFiles.map(async (file) => {
+        const developerAppsPromises = allMetaFiles.map(async (file) => {
             try {
                 const blobResponse = await octokit.git.getBlob({ owner: G_OWNER, repo: G_REPO, file_sha: file.sha });
                 const meta = JSON.parse(Buffer.from(blobResponse.data.content, "base64").toString("utf8"));
 
                 // Filtrar solo las apps subidas por el desarrollador actual (por userId)
                 if (meta.submittedBy === developerUserId) {
-                    const enhanced = await enhanceAppMetadata(meta);
+                    const stats = await getAppStatistics(meta.appId);
+                    
+                    let status = meta.status || (meta.isPublic === true ? 'Approved' : 'Pending Review');
+                    let message = "Esperando revisión del administrador.";
+                    
+                    if (status === 'approved' || meta.isPublic === true) {
+                        status = 'Approved';
+                        message = `Reporte: ${stats.likes} Me Gusta, ${stats.dislikes} No Me Gusta, con una puntuación media de ${stats.score}.`;
+                    } else if (status === 'rejected') {
+                         message = `Rechazada. Razón: ${meta.reason || 'No especificada'}.`;
+                    } else if (status === 'pending_update_review') {
+                         message = `Actualización de versión pendiente de revisión.`;
+                    }
+
+
                     return {
                         appId: meta.appId,
                         title: meta.title,
                         icon: meta.icon,
-                        status: "Pending Review",
-                        versions: [{ version: meta.version || '1.0.0', status: "Pending", date: meta.submissionDate }],
-                        stats: { likes: 0, dislikes: 0, score: 'N/A', ratings: 0 },
-                        message: "Esperando revisión del administrador.",
+                        status: status,
+                        versions: [{ 
+                            version: meta.version || '1.0.0', 
+                            status: status, 
+                            date: meta.updatedAt || meta.submissionDate
+                        }],
+                        stats: stats,
+                        likes: stats.likes,
+                        dislikes: stats.dislikes,
+                        message: message,
                         submissionDate: meta.submissionDate,
                         source: meta.source
                     };
                 }
                 return null;
              } catch (e) {
-                 console.warn(`No se pudo cargar meta.json pendiente en ${file.path}: ${e.message}`);
+                 console.warn(`No se pudo cargar meta.json para el desarrollador: ${file.path}: ${e.message}`);
                  return null;
              }
         });
         
-        const developerPendingApps = (await Promise.all(pendingAppsPromises)).filter(app => app !== null);
-        
-        // Unir las listas
-        const finalAppsList = [...developerPendingApps, ...allDeveloperApps];
+        const finalAppsList = (await Promise.all(developerAppsPromises)).filter(app => app !== null);
 
         res.json({
             ok: true,
             developer: req.developer.developerName || req.developer.email,
             apps: finalAppsList,
-            pendingCount: developerPendingApps.length,
-            approvedCount: approvedApps.length,
+            totalCount: finalAppsList.length,
             message: "Lista de aplicaciones con historial de versiones, estado y estadísticas (reales o simuladas).",
         });
 
     } catch (e) {
         console.error("Error al obtener apps del desarrollador:", e.message);
         res.status(500).json({ ok: false, error: e.message });
+    }
+});
+
+
+/**
+ * 🚀 FUNCIÓN 4: Eliminar aplicación del desarrollador
+ * DELETE /api/dev/apps/:appId
+ */
+app.delete("/api/dev/apps/:appId", authenticateDeveloper, async (req, res) => {
+    const { appId } = req.params;
+    
+    // Intentar encontrar en CATALOG_PATH primero (aprobadas o rechazadas)
+    let isPending = false;
+    let currentMeta = await getAppMetadataFromGithub(appId, false); 
+
+    if (!currentMeta) {
+        // Intentar en PENDING_PATH
+        currentMeta = await getAppMetadataFromGithub(appId, true); 
+        isPending = true;
+    }
+
+    if (!currentMeta) {
+         return res.status(404).json({ ok: false, error: `Aplicación con ID '${appId}' no encontrada.` });
+    }
+    
+    // Validar propiedad
+    if (currentMeta.submittedBy !== req.developer.userId) {
+         return res.status(403).json({ 
+             ok: false, 
+             error: "Acceso denegado. No eres el desarrollador que subió esta aplicación." 
+         });
+    }
+
+    try {
+        // Eliminar la carpeta completa (archivos multimedia + meta.json)
+        const pathToDelete = isPending ? PENDING_PATH : CATALOG_PATH;
+        await deleteAppFolderFromGithub(appId, isPending);
+
+        // Reconstruir los archivos de catálogo/pendientes afectados
+        if (!isPending) {
+             await rebuildCatalogFile();
+        }
+        await rebuildPendingFile();
+
+        res.json({
+            ok: true,
+            message: `✅ Aplicación '${currentMeta.title}' (${appId}) eliminada permanentemente del sistema (${pathToDelete}).`,
+            appId: appId
+        });
+
+    } catch (e) {
+        console.error("Error al eliminar app:", e.message);
+        res.status(500).json({ 
+            ok: false, 
+            error: "Error interno al eliminar la aplicación de GitHub. " + e.message 
+        });
     }
 });
 
@@ -1300,72 +1441,40 @@ app.get("/api/dev/apps", authenticateDeveloper, async (req, res) => {
  * 💡 CORRECCIÓN CLAVE: Este endpoint soluciona el problema de "El panel de aprobación no carga".
  */
 app.get("/api/admin/pending", async (req, res) => {
-    // NOTA DE SEGURIDAD: Aquí se debería validar si el usuario es Admin. Por ahora se omite.
+    // NOTA DE SEGURIDAD: Aquí se debería validar si el usuario es Admin.
     
     try {
-        let branchName = 'main';
+        const pendingData = await rebuildPendingFile(); // Forzar la reconstrucción
+        const pendingAppsList = [];
         
-        // 1. Obtener el SHA de la rama principal (main o master)
-        let branchResponse;
-        try {
-            branchResponse = await octokit.repos.getBranch({ owner: G_OWNER, repo: G_REPO, branch: 'main' });
-        } catch (e) {
-            branchResponse = await octokit.repos.getBranch({ owner: G_OWNER, repo: G_REPO, branch: 'master' });
-            branchName = 'master';
+        // Aplanar el objeto pending_apps_by_developer
+        for (const developerId in pendingData.pending_apps_by_developer) {
+            pendingAppsList.push(...pendingData.pending_apps_by_developer[developerId]);
         }
-
-        const treeSha = branchResponse.data.commit.commit.tree.sha;
-
-        // 2. Obtener el árbol de contenido de forma recursiva (para encontrar la carpeta pending)
-        const treeResponse = await octokit.git.getTree({
-            owner: G_OWNER,
-            repo: G_REPO,
-            tree_sha: treeSha,
-            recursive: 'true',
-        });
-
-        // 3. Filtrar los archivos meta.json en la ruta PENDING
-        const pendingMetaFiles = treeResponse.data.tree.filter(item => 
-            item.path.startsWith(PENDING_PATH + '/') && item.path.endsWith('/meta.json') && item.type === 'blob'
-        );
         
-        const pendingAppsPromises = pendingMetaFiles.map(async (file) => {
-            try {
-                const blobResponse = await octokit.git.getBlob({ owner: G_OWNER, repo: G_REPO, file_sha: file.sha });
-                const meta = JSON.parse(Buffer.from(blobResponse.data.content, "base64").toString("utf8"));
-                
-                // Devolver la metadata completa para la revisión
-                return {
-                    appId: meta.appId,
-                    title: meta.title,
-                    developerName: meta.developerName || meta.author,
-                    submissionDate: meta.submissionDate,
-                    status: meta.status,
-                    source: meta.source,
-                    // Incluir campos clave para la vista de revisión
-                    icon: meta.icon,
-                    briefDescription: meta.summary,
-                    externalDownloadUrl: meta.externalDownloadUrl
-                };
+        // Mapear al formato de respuesta
+        const formattedList = pendingAppsList.map(meta => ({
+            appId: meta.appId,
+            title: meta.title,
+            developerName: meta.developerName || meta.author,
+            submissionDate: meta.submissionDate,
+            status: meta.status,
+            source: meta.source,
+            icon: meta.icon,
+            briefDescription: meta.summary,
+            externalDownloadUrl: meta.externalDownloadUrl
+        }));
 
-             } catch (e) {
-                 console.warn(`No se pudo cargar meta.json pendiente en ${file.path}: ${e.message}`);
-                 return null;
-             }
-        });
-
-        const pendingAppsList = (await Promise.all(pendingAppsPromises)).filter(app => app !== null);
-        
         res.json({
             ok: true,
-            count: pendingAppsList.length,
-            apps: pendingAppsList,
-            message: `Mostrando ${pendingAppsList.length} aplicaciones pendientes de revisión. (Fuente: Rama '${branchName}' de GitHub).`
+            count: formattedList.length,
+            apps: formattedList,
+            message: `Mostrando ${formattedList.length} aplicaciones pendientes de revisión. (Fuente: Archivo apps_en_revision_data.json).`
         });
 
     } catch (e) {
         console.error("🚫 Error al obtener la lista de apps pendientes:", e.message);
-        res.status(500).json({ ok: false, error: "Error interno al acceder a los datos de GitHub. Revise el token y los permisos." });
+        res.status(500).json({ ok: false, error: "Error interno al acceder a los datos de GitHub/Pendientes. Revise el token y los permisos." });
     }
 });
 
@@ -1394,9 +1503,6 @@ app.post("/api/admin/review", async (req, res) => {
         });
         const meta = JSON.parse(Buffer.from(fileData.data.content, "base64").toString("utf8"));
         
-        // 💡 CLAVE: Obtener el SHA de la carpeta para la eliminación (si se necesita)
-        const pendingFolderContents = await octokit.repos.getContent({ owner: G_OWNER, repo: G_REPO, path: `${PENDING_PATH}/${appId}` });
-        
         if (action === 'approve') {
             meta.status = "approved";
             meta.isPublic = true;
@@ -1413,8 +1519,9 @@ app.post("/api/admin/review", async (req, res) => {
             // 3. Eliminar la carpeta PENDIENTE completa
             await deleteAppFolderFromGithub(appId, true);
             
-            // 🛑 PASO CLAVE: Reconstruir el catálogo para que la app esté disponible al instante
+            // 🛑 PASO CLAVE: Reconstruir el catálogo y el archivo pendiente
             await rebuildCatalogFile();
+            await rebuildPendingFile();
 
             res.json({
                 ok: true,
@@ -1430,7 +1537,7 @@ app.post("/api/admin/review", async (req, res) => {
             
             // 1. Guardar la razón de rechazo en el meta.json, marcar como NO público y MOVERLO a CATALOG_PATH (para referencia del desarrollador)
              meta.isPublic = false;
-             await saveMetadataToGithub(
+             const commitReject = await saveMetadataToGithub(
                 appId, 
                 meta, 
                 false, // isPending = false (Mover a CATALOG_PATH - para historial)
@@ -1439,11 +1546,15 @@ app.post("/api/admin/review", async (req, res) => {
             
             // 2. Eliminar la carpeta PENDIENTE
              await deleteAppFolderFromGithub(appId, true);
+             
+            // 🛑 PASO CLAVE: Reconstruir el archivo pendiente
+            await rebuildPendingFile();
 
             res.json({
                 ok: true,
-                message: `🚫 Aplicación RECHAZADA. Razón: ${reason}.`,
-                appId: appId
+                message: `🚫 Aplicación RECHAZADA. Razón: ${reason}. Se movió al historial del desarrollador.`,
+                appId: appId,
+                commitUrl: commitReject.html_url
             });
         } else {
              res.status(400).json({ ok: false, error: "Acción no válida. Debe ser 'approve' o 'reject'." });
@@ -1461,63 +1572,13 @@ app.post("/api/admin/review", async (req, res) => {
 -------------------------------------------------------------------------------------*/
 
 /**
- * 💡 ENDPOINT SOLICITADO: Cargar todo el catálogo de apps
- * GET /todas.apps
- */
-app.get("/todas.apps", (req, res) => {
-    // Usa la función para obtener el catálogo cacheado del archivo apps_data.json
-    const catalog = getCatalogData();
-    res.json(catalog);
-});
-
-/**
- * 💡 ENDPOINT DE TODOS: Usa el catálogo pre-generado (Duplicado para consistencia)
+ * 💡 ENDPOINT DE TODOS: Usa el catálogo pre-generado
  * GET /api/public/apps/all
  */
 app.get("/api/public/apps/all", (req, res) => {
     // 💡 Usa la función para obtener el catálogo cacheado del archivo apps_data.json
     const catalog = getCatalogData();
     res.json(catalog);
-});
-
-/**
- * 💡 ENDPOINT SOLICITADO: Buscar aplicaciones por nombre.
- * GET /search?query={facebook}
- */
-app.get("/search", (req, res) => {
-    const query = req.query.query ? req.query.query.toLowerCase() : '';
-    
-    if (!query) {
-        return res.status(400).json({ 
-            ok: false, 
-            error: "El parámetro 'query' es obligatorio para la búsqueda." 
-        });
-    }
-
-    try {
-        const catalog = getCatalogData();
-        
-        // 1. Filtrar las aplicaciones
-        const filteredApps = catalog.apps.filter(app => 
-            // Búsqueda por nombre o descripción (parcial e insensible a mayúsculas/minúsculas)
-            app.name.toLowerCase().includes(query) || 
-            (app.description && app.description.toLowerCase().includes(query)) ||
-            (app.category && app.category.toLowerCase().includes(query)) ||
-            app.appId.toLowerCase().includes(query)
-        );
-        
-        res.json({
-            ok: true,
-            query: req.query.query,
-            count: filteredApps.length,
-            apps: filteredApps,
-            message: `Resultados para la búsqueda de '${req.query.query}' en el catálogo.`
-        });
-
-    } catch (e) {
-        console.error("Error al buscar en el catálogo:", e.message);
-        res.status(500).json({ ok: false, error: "Error interno al procesar la búsqueda." });
-    }
 });
 
 
@@ -1549,14 +1610,14 @@ app.get("/api/public/apps/:appId", async (req, res) => {
         const stats = await getAppStatistics(actualAppId);
 
         // Esta vez devolvemos TODOS los datos de la metadata, no solo la versión reducida.
+        const enhancedMeta = await enhanceAppMetadata(meta);
+
         const responseData = {
             ok: true, 
             app: meta, // Devolvemos la metadata completa de GitHub
-            // Si la metadata tiene URL de descarga, la exponemos
+            // Campos clave para la vista pública
             downloadUrl: meta.externalDownloadUrl,
-            // Re-ejecutamos enhanceAppMetadata para tener los campos formateados y estadísticas
-            ...await enhanceAppMetadata(meta), 
-            // Stats detalladas
+            ...enhancedMeta, // Incluye score, likes, dislikes, etc.
             stats: stats, 
         };
 
@@ -1606,19 +1667,21 @@ const handleLikeAction = async (appId, action, userId) => {
             currentData.dislikes = Math.max(0, currentData.dislikes - 1);
         }
         
-        // Aplicar la nueva acción
+        // Aplicar la nueva acción (solo si es diferente a la anterior)
+        let newAction = userAction;
         if (action === 'like' && userAction !== 'like') {
             currentData.likes++;
-            currentData.users[userId] = 'like';
+            newAction = 'like';
         } else if (action === 'dislike' && userAction !== 'dislike') {
             currentData.dislikes++;
-            currentData.users[userId] = 'dislike';
+            newAction = 'dislike';
         } 
         
         // Caso: El usuario hace clic de nuevo en la misma acción (Toggle/Deshacer)
         if (userAction === action && action !== 'remove') {
             // Deshacer el voto si hace clic de nuevo
             delete currentData.users[userId];
+            newAction = 'none'; // No hay acción
             if (action === 'like') {
                 currentData.likes = Math.max(0, currentData.likes - 1);
             } else {
@@ -1627,6 +1690,10 @@ const handleLikeAction = async (appId, action, userId) => {
         } else if (action === 'remove' && userAction) {
              // Si es 'remove', borra el voto
              delete currentData.users[userId];
+             newAction = 'none';
+        } else if (newAction !== 'none') {
+             // Si hay nueva acción, actualizar
+             currentData.users[userId] = newAction;
         }
 
         // Asegurarse de que no haya negativos
@@ -1638,8 +1705,6 @@ const handleLikeAction = async (appId, action, userId) => {
     });
     
     // Llamar a la reconstrucción del catálogo para reflejar la nueva puntuación
-    // Se recomienda una reconstrucción periódica. Aquí se mantiene la llamada por completitud.
-    // Aunque es un poco ineficiente, asegura la consistencia.
     rebuildCatalogFile(); 
     
     return result;
@@ -1722,23 +1787,21 @@ app.get("/", (req, res) => {
     mensaje: "🚀 Catálogo Público / API Consulta PE y Developer Console funcionando.",
     "developer-console": {
       docs: "/api/dev/me",
-      submission: "/api/dev/apps/submit/*",
-      media_update: "PUT /api/dev/apps/:appId/media", 
-      // 💡 NUEVOS ENDPOINTS
-      my_apps_list: "GET /api/dev/apps", // Soluciona el problema de no ver apps
+      submission_manual: "POST /api/dev/apps/submit/manual",
+      submission_playstore: "POST /api/dev/apps/submit/playstore",
+      edit_app: "PUT /api/dev/apps/:appId/edit", 
+      delete_app: "DELETE /api/dev/apps/:appId",
+      my_apps_list: "GET /api/dev/apps", 
       playstore_lookup: "GET /api/dev/apps/lookup/playstore?packageId={id}",
       playstore_search: "GET /api/dev/apps/search/playstore?query={name}"
     },
     "admin-console": {
-        pending_list: "GET /api/admin/pending", // Soluciona el problema de panel de aprobación
+        pending_list: "GET /api/admin/pending", 
         review_action: "POST /api/admin/review (approve/reject)"
     },
     "catalogo-publico": {
-        full_catalog_1: "/api/public/apps/all",
-        // 💡 ENDPOINTS SOLICITADOS
-        full_catalog_2: "/todas.apps",
-        search: "/search?query=...",
-        // ------------------------
+        full_catalog: "/api/public/apps/all",
+        search: "/api/public/apps/search?query=...",
         popular: "/api/public/apps/popular",
         details: "/api/public/apps/:appId",
         interaccion: "/api/public/apps/:appId/:action (like|dislike|remove)" 
