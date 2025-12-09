@@ -1461,13 +1461,63 @@ app.post("/api/admin/review", async (req, res) => {
 -------------------------------------------------------------------------------------*/
 
 /**
- * 💡 ENDPOINT DE TODOS: Usa el catálogo pre-generado
+ * 💡 ENDPOINT SOLICITADO: Cargar todo el catálogo de apps
+ * GET /todas.apps
+ */
+app.get("/todas.apps", (req, res) => {
+    // Usa la función para obtener el catálogo cacheado del archivo apps_data.json
+    const catalog = getCatalogData();
+    res.json(catalog);
+});
+
+/**
+ * 💡 ENDPOINT DE TODOS: Usa el catálogo pre-generado (Duplicado para consistencia)
  * GET /api/public/apps/all
  */
 app.get("/api/public/apps/all", (req, res) => {
     // 💡 Usa la función para obtener el catálogo cacheado del archivo apps_data.json
     const catalog = getCatalogData();
     res.json(catalog);
+});
+
+/**
+ * 💡 ENDPOINT SOLICITADO: Buscar aplicaciones por nombre.
+ * GET /search?query={facebook}
+ */
+app.get("/search", (req, res) => {
+    const query = req.query.query ? req.query.query.toLowerCase() : '';
+    
+    if (!query) {
+        return res.status(400).json({ 
+            ok: false, 
+            error: "El parámetro 'query' es obligatorio para la búsqueda." 
+        });
+    }
+
+    try {
+        const catalog = getCatalogData();
+        
+        // 1. Filtrar las aplicaciones
+        const filteredApps = catalog.apps.filter(app => 
+            // Búsqueda por nombre o descripción (parcial e insensible a mayúsculas/minúsculas)
+            app.name.toLowerCase().includes(query) || 
+            (app.description && app.description.toLowerCase().includes(query)) ||
+            (app.category && app.category.toLowerCase().includes(query)) ||
+            app.appId.toLowerCase().includes(query)
+        );
+        
+        res.json({
+            ok: true,
+            query: req.query.query,
+            count: filteredApps.length,
+            apps: filteredApps,
+            message: `Resultados para la búsqueda de '${req.query.query}' en el catálogo.`
+        });
+
+    } catch (e) {
+        console.error("Error al buscar en el catálogo:", e.message);
+        res.status(500).json({ ok: false, error: "Error interno al procesar la búsqueda." });
+    }
 });
 
 
@@ -1684,8 +1734,11 @@ app.get("/", (req, res) => {
         review_action: "POST /api/admin/review (approve/reject)"
     },
     "catalogo-publico": {
-        full_catalog: "/api/public/apps/all",
-        search: "/api/public/apps/search?query=...",
+        full_catalog_1: "/api/public/apps/all",
+        // 💡 ENDPOINTS SOLICITADOS
+        full_catalog_2: "/todas.apps",
+        search: "/search?query=...",
+        // ------------------------
         popular: "/api/public/apps/popular",
         details: "/api/public/apps/:appId",
         interaccion: "/api/public/apps/:appId/:action (like|dislike|remove)" 
