@@ -1300,8 +1300,7 @@ app.get("/api/dev/apps", authenticateDeveloper, async (req, res) => {
     try {
         let allDeveloperApps = [];
         
-        // 1. Obtener todas las apps APROBADAS y PENDIENTES/RECHAZADAS del catálogo (ruta CATALOG_PATH)
-        // Obtener el árbol de la carpeta CATALOG_PATH y PENDING_PATH (juntos)
+        // 1. Obtener todos los meta.json de CATALOG_PATH y PENDING_PATH
         let allMetaFiles = [];
         const pathsToSearch = [CATALOG_PATH, PENDING_PATH];
 
@@ -1329,29 +1328,53 @@ app.get("/api/dev/apps", authenticateDeveloper, async (req, res) => {
             try {
                 const blobResponse = await octokit.git.getBlob({ owner: G_OWNER, repo: G_REPO, file_sha: file.sha });
                 const meta = JSON.parse(Buffer.from(blobResponse.data.content, "base64").toString("utf8"));
-
-                // Filtrar solo las apps subidas por el desarrollador actual (por userId)
+                
+                // 🛑 FILTRO CLAVE: Filtrar solo las apps subidas por el desarrollador actual (por userId)
                 if (meta.submittedBy === developerUserId) {
                     const stats = await getAppStatistics(meta.appId);
                     
-                    let status = meta.status || (meta.isPublic === true ? 'Approved' : 'Pending Review');
-                    let message = "Esperando revisión del administrador.";
+                    // 💡 LÓGICA DE ESTADO CORREGIDA
+                    let status = meta.status;
+                    let message = "Detalles de la aplicación.";
                     
-                    if (status === 'approved' || meta.isPublic === true) {
-                        status = 'Approved';
-                        message = `Reporte: ${stats.likes} Me Gusta, ${stats.dislikes} No Me Gusta, con una puntuación media de ${stats.score}.`;
-                    } else if (status === 'rejected') {
-                         message = `Rechazada. Razón: ${meta.reason || 'No especificada'}.`;
-                    } else if (status === 'pending_update_review') {
-                         message = `Actualización de versión pendiente de revisión.`;
+                    // a) Si no hay 'status' en el meta.json, lo inferimos
+                    if (!status) {
+                        const isInPendingPath = file.path.startsWith(PENDING_PATH + '/');
+                        
+                        if (isInPendingPath) {
+                            // Si está en la carpeta de pendientes, siempre es 'Pending Review'
+                            status = 'pending_review';
+                        } else if (meta.isPublic === true) {
+                            // Si está en la carpeta del catálogo y es público
+                            status = 'approved';
+                        } else {
+                            // Si está en el catálogo, no es público, y no tiene status, algo anda mal, pero se asume pendiente.
+                            status = 'pending_review'; 
+                        }
                     }
 
+                    // b) Asignación del mensaje según el estado final
+                    if (status === 'approved') {
+                        status = 'Aprobada';
+                        message = `Reporte: ${stats.likes} Me Gusta, ${stats.dislikes} No Me Gusta, con una puntuación media de ${stats.score}.`;
+                    } else if (status === 'rejected') {
+                         status = 'Rechazada'; // Corrección para el problema de estado
+                         message = `Rechazada. Razón: ${meta.reason || 'No especificada'}.`;
+                    } else if (status === 'pending_update_review') {
+                         status = 'Pendiente Actualización';
+                         message = `Actualización de versión pendiente de revisión.`;
+                    } else {
+                         // Corregido: 'pending_review' o cualquier otro estado no aprobado
+                         status = 'En revisión'; // Corrección para el problema de estado
+                         message = "Esperando revisión del administrador.";
+                    }
 
                     return {
                         appId: meta.appId,
                         title: meta.title,
-                        icon: meta.icon,
-                        status: status,
+                        // 💡 CORRECCIÓN CLAVE: Añadir el icono para el panel
+                        icon: meta.icon, 
+                        status: status, // Estado corregido
                         versions: [{ 
                             version: meta.version || '1.0.0', 
                             status: status, 
