@@ -1,0 +1,30 @@
+{
+  "appId": "Com.mi.app.",
+  "title": "App de prueba ",
+  "icon": "https://raw.githubusercontent.com/juanfu7467v/Apps-masitaprex.v2/main/public/apps_pending/Com.mi.app./icon.png",
+  "category": "Entretenimiento",
+  "summary": "Buena app",
+  "description": "Un skdkldkd",
+  "developer": "miguel.hd@gmail.com",
+  "language": "fr",
+  "externalDownloadUrl": "https://dldkjdkdldldld.apk",
+  "screenshots": [
+    "https://raw.githubusercontent.com/juanfu7467v/Apps-masitaprex.v2/main/public/apps_pending/Com.mi.app./screenshot_1.webp",
+    "https://raw.githubusercontent.com/juanfu7467v/Apps-masitaprex.v2/main/public/apps_pending/Com.mi.app./screenshot_2.jpeg"
+  ],
+  "video": "",
+  "operatingSystem": "Windows",
+  "author": "Memo ",
+  "status": "pending_review",
+  "submittedBy": "sv6I2ovbsEgDj2p5kOHoHasO0iu1",
+  "developerName": "miguel.hd@gmail.com",
+  "submissionDate": "2025-12-10T14:40:33.255Z",
+  "source": "manual_submission",
+  "score": 0,
+  "ratings": 0,
+  "installs": "0+",
+  "version": "1.0.0",
+  "apk_size": "",
+  "updatedAt": 1765377633255,
+  "isPublic": false
+}
