@@ -343,6 +343,7 @@ async function enhanceAppMetadata(meta) {
 
 /**
  * Función para obtener el contenido de un archivo meta.json específico.
+ * Devuelve el objeto completo del meta.json
  */
 async function getAppMetadataFromGithub(appId, isPending) {
     // 💡 CORRECCIÓN: Asegurar que la ruta base use la ruta correcta.
@@ -1118,9 +1119,85 @@ app.post("/api/dev/apps/submit/manual", authenticateDeveloper, async (req, res) 
 });
 
 /**
+ * 💡 NUEVO ENDPOINT CLAVE: Cargar la información COMPLETA de una app para su edición.
+ * GET /api/dev/apps/:appId
+ */
+app.get("/api/dev/apps/:appId", authenticateDeveloper, async (req, res) => {
+    const { appId } = req.params;
+    const developerUserId = req.developer.userId;
+    
+    // 1. Intentar encontrar en PENDING_PATH
+    let isPending = true;
+    let currentMeta = await getAppMetadataFromGithub(appId, true); 
+
+    if (!currentMeta) {
+        // 2. Intentar en CATALOG_PATH (aprobadas o rechazadas)
+        currentMeta = await getAppMetadataFromGithub(appId, false); 
+        isPending = false;
+    }
+
+    if (!currentMeta) {
+         return res.status(404).json({ ok: false, error: `Aplicación con ID '${appId}' no encontrada en estado pendiente o aprobado.` });
+    }
+    
+    // 3. Validar que el desarrollador sea el propietario
+    if (currentMeta.submittedBy !== developerUserId) {
+         return res.status(403).json({ 
+             ok: false, 
+             error: "Acceso denegado. No eres el desarrollador que subió esta aplicación." 
+         });
+    }
+
+    try {
+        const stats = await getAppStatistics(appId);
+        
+        // 4. Determinar el estado legible
+        let status = currentMeta.status;
+        let message = "Detalles de la aplicación.";
+        
+        if (!status) {
+            status = isPending ? 'pending_review' : (currentMeta.isPublic === true ? 'approved' : 'rejected');
+        }
+
+        if (status === 'approved') {
+            status = 'Aprobada';
+            message = `Reporte: ${stats.likes} Me Gusta, ${stats.dislikes} No Me Gusta, con una puntuación media de ${stats.score}.`;
+        } else if (status === 'rejected') {
+             status = 'Rechazada';
+             message = `Rechazada. Razón: ${currentMeta.reason || 'No especificada'}.`;
+        } else if (status === 'pending_update_review') {
+             status = 'Pendiente Actualización';
+             message = `Actualización de versión/descarga pendiente de revisión.`;
+        } else {
+             status = 'En revisión';
+             message = "Esperando revisión del administrador.";
+        }
+        
+        // 5. Devolver toda la metadata junto con las estadísticas
+        res.json({
+            ok: true,
+            message: `Detalles completos de la aplicación '${currentMeta.title}'.`,
+            appData: {
+                ...currentMeta, // Devuelve toda la información del meta.json (capturas, descripción, etc.)
+                isPending: isPending,
+                statusText: status, // Estado legible
+                stats: stats, // Estadísticas de la app
+                developerMessage: message,
+            }
+        });
+
+    } catch (e) {
+        console.error("Error al obtener detalles de app para edición:", e.message);
+        res.status(500).json({ 
+            ok: false, 
+            error: "Error interno al procesar la solicitud. " + e.message 
+        });
+    }
+});
+
+
+/**
  * 💡 NUEVO ENDPOINT: Eliminar/Reemplazar Icono, Capturas, Imagen Destacada o Video.
- * PUT /api/dev/apps/:appId/media
- * 💡 MEJORA: Unificado con la edición de información básica
  * PUT /api/dev/apps/:appId/edit
  */
 app.put("/api/dev/apps/:appId/edit", authenticateDeveloper, async (req, res) => {
@@ -1131,7 +1208,9 @@ app.put("/api/dev/apps/:appId/edit", authenticateDeveloper, async (req, res) => 
         youtubeUrl, 
         // Campos de texto para edición de información básica
         appName, briefDescription, fullDescription, classification, 
-        operatingSystem, language, author, directDownloadUrl, version, apk_size 
+        operatingSystem, language, author, directDownloadUrl, version, apk_size,
+        // Campo adicional para el desarrollador para desmarcar el check de 'isPublic'
+        isPublic = undefined
     } = req.body;
     
     // 1. Determinar si la app está en PENDING o CATALOG
@@ -1147,8 +1226,7 @@ app.put("/api/dev/apps/:appId/edit", authenticateDeveloper, async (req, res) => 
          return res.status(404).json({ ok: false, error: `Aplicación con ID '${appId}' no encontrada en estado pendiente o aprobado.` });
     }
     
-    // 2. Validar que el desarrollador sea el propietario (o administrador, si se implementa)
-    // Se usa el userId que es más robusto
+    // 2. Validar que el desarrollador sea el propietario
     const developerMatch = (currentMeta.submittedBy === req.developer.userId);
                           
     if (!developerMatch) {
@@ -1174,15 +1252,18 @@ app.put("/api/dev/apps/:appId/edit", authenticateDeveloper, async (req, res) => 
         externalDownloadUrl: directDownloadUrl || currentMeta.externalDownloadUrl,
         version: version || currentMeta.version,
         apk_size: apk_size || currentMeta.apk_size,
+        // Lógica de isPublic: solo si se envía
+        isPublic: isPublic !== undefined ? isPublic : currentMeta.isPublic,
     };
     
     let commitMessage = `Update for ${appId}:`;
     let changesMade = false;
     
     // Si la app está APROBADA y el cambio es de versión/APK/descarga, se requiere nueva revisión
-    if (!isPending && (version || directDownloadUrl)) {
+    // 💡 CORRECCIÓN: Comparar con el valor existente en currentMeta
+    if (!isPending && (version && version !== currentMeta.version) || (directDownloadUrl && directDownloadUrl !== currentMeta.externalDownloadUrl)) {
          updates.status = "pending_update_review";
-         commitMessage += " Version update submitted for review.";
+         commitMessage += " Version/Download update submitted for review.";
          changesMade = true;
     }
 
@@ -1192,6 +1273,7 @@ app.put("/api/dev/apps/:appId/edit", authenticateDeveloper, async (req, res) => 
             updates.icon = await uploadImageToGithub(iconBase64, appId, "icon.png", isPending);
             commitMessage += " Icon replaced.";
         } else {
+            // Si el ícono era una URL de Play Store, no se puede borrar de la web. Solo borramos si es un archivo subido.
             if (updates.icon && !updates.icon.startsWith('http')) {
                 await deleteFileFromGithub(appId, "icon.png", isPending);
             }
@@ -1211,8 +1293,16 @@ app.put("/api/dev/apps/:appId/edit", authenticateDeveloper, async (req, res) => 
     // --- 5. Actualizar CAPTURAS DE PANTALLA ---
     if (screenshotsBase64 !== null) {
         // Borrar archivos antiguos
+        // 💡 MEJORA: Solo borrar los archivos subidos (no las URLs de Play Store)
         for (let i = 1; i <= 8; i++) {
-            await deleteFileFromGithub(appId, `screenshot_${i}.png`, isPending);
+            const ssUrl = currentMeta.screenshots ? currentMeta.screenshots.find(url => url.includes(`screenshot_${i}.png`)) : null;
+            // Si la URL NO es de una fuente externa (Play Store) se elimina el archivo en GitHub
+            if (ssUrl && !ssUrl.startsWith('http')) { 
+                 await deleteFileFromGithub(appId, `screenshot_${i}.png`, isPending);
+            } else if (!ssUrl) {
+                 // Si no existe en la metadata, intentamos eliminar por si acaso (ej. un fallo)
+                 await deleteFileFromGithub(appId, `screenshot_${i}.png`, isPending);
+            }
         }
         
         updates.screenshots = [];
@@ -1227,17 +1317,11 @@ app.put("/api/dev/apps/:appId/edit", authenticateDeveloper, async (req, res) => 
     }
     
     // 6. Comprobar si hay cambios en los campos de texto
-    const textFields = ['title', 'summary', 'description', 'category', 'operatingSystem', 'language', 'author', 'externalDownloadUrl', 'version', 'apk_size'];
+    const textFields = ['title', 'summary', 'description', 'category', 'operatingSystem', 'language', 'author', 'externalDownloadUrl', 'version', 'apk_size', 'isPublic'];
     textFields.forEach(field => {
         // Solo compara si el campo existe en el body (o se envía null/cadena vacía)
         if (req.body[field] !== undefined && req.body[field] !== null && req.body[field] !== currentMeta[field]) {
-             // Si el campo enviado está vacío, solo actualizar si no lo estaba antes
-             if (req.body[field].length === 0 && currentMeta[field] === undefined) return;
-             
-             // Si el campo tiene un valor, se actualiza
-             updates[field] = req.body[field];
-             
-             // Si el campo de texto se actualizó, se considera un cambio
+             // Si el campo tiene un valor diferente, se actualiza
              if (updates[field] !== currentMeta[field]) {
                  commitMessage += ` ${field} updated.`;
                  changesMade = true;
@@ -1307,10 +1391,11 @@ app.get("/api/dev/apps", authenticateDeveloper, async (req, res) => {
         for (const basePath of pathsToSearch) {
              let treeResponse;
              try {
+                // Obtener el árbol de contenido de forma recursiva
                 treeResponse = await octokit.git.getTree({
                     owner: G_OWNER,
                     repo: G_REPO,
-                    tree_sha: 'HEAD', // Obtener el árbol más reciente
+                    tree_sha: 'HEAD', 
                     recursive: 'true',
                 });
              } catch (e) {
@@ -1802,6 +1887,8 @@ app.get("/", (req, res) => {
       docs: "/api/dev/me",
       submission_manual: "POST /api/dev/apps/submit/manual",
       submission_playstore: "POST /api/dev/apps/submit/playstore",
+      // 💡 NUEVO ENDPOINT PARA OBTENER DETALLES COMPLETOS
+      get_app_details: "GET /api/dev/apps/:appId", 
       edit_app: "PUT /api/dev/apps/:appId/edit", 
       delete_app: "DELETE /api/dev/apps/:appId",
       my_apps_list: "GET /api/dev/apps", 
