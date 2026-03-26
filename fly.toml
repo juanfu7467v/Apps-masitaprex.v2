@@ -1,10 +1,10 @@
-# fly.toml app configuration file generated for apps-masitaprex-v2 on 2025-11-18T00:55:35Z
+# fly.toml app configuration file generated for masitaprexv2 on 2026-03-26T15:44:31Z
 #
 # See https://fly.io/docs/reference/configuration/ for information about how to use this file.
 #
 
-app = 'apps-masitaprex-v2'
-primary_region = 'gru'
+app = 'masitaprexv2'
+primary_region = 'iad'
 
 [build]
 
