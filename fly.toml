@@ -1,37 +1,43 @@
-app = "ollama-code-agent"
-primary_region = "mia"
+# fly.toml app configuration file generated for agente-de-pruevas on 2026-10-07T03:25:38Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'agente-de-pruevas'
+primary_region = 'ams'
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = 'Dockerfile'
 
 [env]
-  PORT = "8080"
-  OLLAMA_HOST = "127.0.0.1:11434"
-  OLLAMA_MODEL = "qwen2.5:3b"
-  OLLAMA_KEEP_ALIVE = "5m"
-  PULL_MODEL = "true"
+  OLLAMA_HOST = '127.0.0.1:11434'
+  OLLAMA_KEEP_ALIVE = '5m'
+  OLLAMA_MODEL = 'qwen2.5:3b'
+  PORT = '8080'
+  PULL_MODEL = 'true'
 
-[mounts]
-  source = "ollama_models"
-  destination = "/root/.ollama"
-  initial_size = "20gb"
+[[mounts]]
+  source = 'ollama_models'
+  destination = '/root/.ollama'
+  initial_size = '20gb'
 
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = false
+  auto_stop_machines = 'off'
   auto_start_machines = true
   min_machines_running = 1
-  processes = ["app"]
+  processes = ['app']
 
   [[http_service.checks]]
-    grace_period = "30s"
-    interval = "30s"
-    method = "GET"
-    timeout = "10s"
-    path = "/api/health"
+    interval = '30s'
+    timeout = '10s'
+    grace_period = '30s'
+    method = 'GET'
+    path = '/api/health'
 
 [[vm]]
-  memory = "4096mb"
-  cpu_kind = "shared"
+  memory = '4096mb'
+  cpu_kind = 'shared'
   cpus = 2
+  memory_mb = 2048
