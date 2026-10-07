@@ -45,13 +45,13 @@ docker run --rm -p 8080:8080 -v forge-models:/root/.ollama forge-ollama
 
 ```bash
 fly auth login
-fly apps create ollama-code-agent
+fly apps create agente-de-pruevas
 ```
 
 3. Crea el volumen persistente en la misma región que `primary_region`:
 
 ```bash
-fly volumes create ollama_models --region mia --size 20 --app ollama-code-agent
+fly volumes create ollama_models --region mia --size 20 --app agente-de-pruevas
 ```
 
 Si el volumen ya existe, no lo recrees. Para modelos grandes, aumenta `--size`.
@@ -69,20 +69,20 @@ PULL_MODEL = "true"
 5. Configura secretos opcionales. Para Tavily, si en el futuro sustituyes el adaptador DuckDuckGo por Tavily, guarda la clave como secreto; no la pongas en el frontend:
 
 ```bash
-fly secrets set TAVILY_API_KEY="tu-clave" --app ollama-code-agent
+fly secrets set TAVILY_API_KEY="tu-clave" --app agente-de-pruevas
 ```
 
 También puedes cambiar el modelo y desactivar la descarga automática:
 
 ```bash
-fly secrets set OLLAMA_MODEL="llama3.2:3b" PULL_MODEL="true" --app ollama-code-agent
+fly secrets set OLLAMA_MODEL="llama3.2:3b" PULL_MODEL="true" --app agente-de-pruevas
 ```
 
 6. Despliega:
 
 ```bash
-fly deploy --ha=false --app ollama-code-agent
-fly logs --app ollama-code-agent
+fly deploy --ha=false --app agente-de-pruevas
+fly logs --app agente-de-pruevas
 ```
 
 La primera ejecución puede tardar mientras descarga el modelo. La comprobación de salud está en `GET /api/health`.

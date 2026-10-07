@@ -1,4 +1,4 @@
-app = "ollama-code-agent"
+app = "agente-de-pruevas"
 primary_region = "mia"
 
 [build]
