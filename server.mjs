@@ -99,12 +99,14 @@ function extractFiles(text) {
   return files.filter((file) => file.path && !file.path.includes('..')).slice(0, 100);
 }
 
-app.get('/api/health', async () => {
+app.get('/api/health', async (_request, reply) => {
   try {
     const tags = await ollama('/api/tags');
-    return { ok: true, ollama: true, models: (tags.models || []).map((m) => m.name) };
+    const models = (tags.models || []).map((m) => m.name);
+    if (!models.length) return reply.code(503).send({ ok: false, ollama: true, models, error: 'Ollama está listo, pero no hay modelos instalados.' });
+    return { ok: true, ollama: true, models };
   } catch (error) {
-    return { ok: true, ollama: false, error: error.message, models: [] };
+    return reply.code(503).send({ ok: false, ollama: false, error: error.message, models: [] });
   }
 });
 
