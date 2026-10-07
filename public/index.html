@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#080b12" />
+  <title>Forge — Agente de código con Ollama</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><div class="brand-mark">⌘</div><div><strong>FORGE</strong><span>OLLAMA CODE AGENT</span></div></div>
+      <button class="new-chat" id="newChat">+ Nueva conversación</button>
+      <div class="side-section"><div class="section-label">HERRAMIENTAS</div><div class="tool-row"><span class="status-dot"></span><span>Búsqueda web</span><small>DuckDuckGo</small></div><div class="tool-row"><span class="status-dot"></span><span>Generador ZIP</span><small>Activo</small></div></div>
+      <div class="sidebar-footer"><span class="pulse"></span><span id="healthText">Conectando con Ollama…</span></div>
+    </aside>
+    <main class="main">
+      <header class="topbar"><button class="icon-btn mobile-only" id="menuBtn">☰</button><div><div class="eyebrow">WORKSPACE / CODING</div><h1>Tu copiloto de ingeniería</h1></div><button class="icon-btn" id="settingsBtn">⚙</button></header>
+      <section class="chat" id="chat"><div class="welcome" id="welcome"><div class="hero-icon">✦</div><h2>Construye algo extraordinario.</h2><p>Pregunta, depura o describe un proyecto. Forge puede investigar documentación actualizada y devolverte archivos listos para ejecutar.</p><div class="suggestions"><button data-prompt="Crea una API REST con Fastify, validación y tests">Crear una API</button><button data-prompt="Explícame cómo usar la API de streams de Node.js con un ejemplo">Investigar documentación</button><button data-prompt="Revisa las mejores prácticas actuales para Dockerizar una app de Python">Revisar buenas prácticas</button></div></div></section>
+      <div class="composer-wrap"><div class="activity" id="activity" hidden><span class="loader"></span><span id="activityText">Pensando…</span></div><form class="composer" id="composer"><textarea id="prompt" rows="1" placeholder="Describe lo que quieres construir…" autocomplete="off"></textarea><div class="composer-bottom"><span class="hint">Enter para enviar · Shift + Enter para nueva línea</span><button class="send-btn" type="submit" id="sendBtn">Enviar <span>↗</span></button></div></form></div>
+    </main>
+  </div>
+  <dialog id="settingsDialog"><form method="dialog" class="settings"><div class="dialog-head"><div><div class="eyebrow">CONFIGURACIÓN</div><h2>Parámetros del agente</h2></div><button class="close-btn">×</button></div><label>Modelo de Ollama<select id="modelSelect"><option value="qwen2.5:3b">qwen2.5:3b</option><option value="qwen2.5:1.5b">qwen2.5:1.5b</option><option value="llama3.2:3b">llama3.2:3b</option></select></label><label>Instrucciones del sistema<textarea id="systemPrompt" rows="5" placeholder="Ej.: Sé conciso y prioriza TypeScript…"></textarea></label><p class="muted">El modelo debe estar descargado en Ollama. Puedes cambiarlo con <code>OLLAMA_MODEL</code> o desde este panel.</p><button class="primary-btn" value="save">Guardar configuración</button></form></dialog>
+  <script src="/app.js"></script>
+</body>
+</html>

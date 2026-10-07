@@ -1,42 +1,42 @@
-# syntax = docker/dockerfile:1
+FROM ollama/ollama:latest AS ollama
 
-# Adjust NODE_VERSION as desired
-ARG NODE_VERSION=20.12.2 # Usando la versión LTS más reciente como recomendación
-FROM node:${NODE_VERSION}-slim AS base
-
-LABEL fly_launch_runtime="Node.js"
-
-# Node.js app lives here
+FROM node:22-bookworm-slim
+ENV NODE_ENV=production \
+    PORT=8080 \
+    OLLAMA_HOST=127.0.0.1:11434 \
+    OLLAMA_MODEL=qwen2.5:3b
 WORKDIR /app
 
-# Set production environment
-ENV NODE_ENV="production"
-
-
-# Throw-away build stage to reduce size of final image
-FROM base AS build
-
-# Install packages needed to build node modules
-# El paquete python-is-python3 ya no es necesario en Node 20
-RUN apt-get update -qq && \
-    apt-get install --no-install-recommends -y build-essential pkg-config
-
-# Install node modules
-COPY package.json ./
-# Para Node.js en producción, es mejor usar `npm ci` si tienes un package-lock.json (que se supone que sí)
-# Pero `npm install` es suficiente para esta etapa de construcción
-RUN npm install
-
-# Copy application code
+COPY --from=ollama /usr/bin/ollama /usr/bin/ollama
+COPY package*.json ./
+RUN npm install --omit=dev
 COPY . .
 
+RUN useradd --create-home --shell /bin/bash appuser && \
+    mkdir -p /root/.ollama /app/workspace && \
+    chown -R appuser:appuser /app
 
-# Final stage for app image
-FROM base
+COPY <<'EOF' /usr/local/bin/start.sh
+#!/bin/sh
+set -eu
+ollama serve > /tmp/ollama.log 2>&1 &
+OLLAMA_PID=$!
+cleanup() { kill "$OLLAMA_PID" 2>/dev/null || true; }
+trap cleanup INT TERM EXIT
 
-# Copy built application
-COPY --from=build /app /app
+echo "Waiting for Ollama..."
+for i in $(seq 1 60); do
+  if curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then break; fi
+  sleep 1
+done
+if [ "${PULL_MODEL:-true}" = "true" ]; then
+  echo "Ensuring model ${OLLAMA_MODEL} is available..."
+  ollama pull "${OLLAMA_MODEL}" || echo "Model pull failed; the app will report the Ollama error."
+fi
+exec su appuser -s /bin/sh -c 'node /app/server.mjs'
+EOF
+RUN chmod +x /usr/local/bin/start.sh
 
-# Start the server by default, this can be overwritten at runtime
-EXPOSE 3000
-CMD [ "npm", "run", "start" ]
+EXPOSE 8080
+VOLUME ["/root/.ollama"]
+CMD ["/usr/local/bin/start.sh"]
